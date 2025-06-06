@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Dashboard</title>
+    <style>
+        /* [your CSS remains the same] */
+    </style>
+    <!-- Font Awesome for icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+</head>
+<body>
+    <div class="header">
+        <div class="logo">Challengers</div>
+        <div class="profile-container">
+            <img src="https://ui-avatars.com/api/?name={{ user.fullname | urlencode }}&background=random"
+                 alt="Profile"
+                 class="profile-picture">
+            <div class="dropdown-menu">
+                <a href="#" class="dropdown-item">
+                    <i class="fas fa-user"></i>
+                    <span>{{ user.fullname }}</span>
+                </a>
+                <a href="{{ url_for('logout') }}" class="dropdown-item">
+                    <i class="fas fa-sign-out-alt"></i>
+                    <span>Log out</span>
+                </a>
+                <a href="#" class="dropdown-item">
+                    <i class="fas fa-question-circle"></i>
+                    <span>Help</span>
+                </a>
+            </div>
+        </div>
+    </div>
+
+    <div class="dashboard">
+        <h1 class="welcome-message">Welcome, {{ user.fullname }} 👋</h1>
+        <p>Email: {{ user.email }}</p>
+        <p>User ID: {{ user.id }}</p>
+    </div>
+</body>
+</html>
