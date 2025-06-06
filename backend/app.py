@@ -2,6 +2,7 @@ from flask import Flask, render_template, request, redirect, url_for, session, j
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_wtf.csrf import CSRFProtect
+from werkzeug.utils import secure_filename
 from datetime import datetime, timedelta
 import os
 import random
@@ -27,13 +28,20 @@ csrf = CSRFProtect(app)
 basedir = os.path.abspath(os.path.dirname(__file__))
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(basedir, 'users.db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+# 📁 Upload Setup - MOVED THIS UP BEFORE USING IT
+app.config['UPLOAD_FOLDER'] = os.path.join(basedir, 'static', 'uploads')
+# Create upload directory if it doesn't exist
+os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+
 db = SQLAlchemy(app)
 
-# 📧 Email Config
-EMAIL_SENDER = "thenewmeformtoday@gmail.com"
-EMAIL_PASSWORD = "ylfm ttjg tabg qdcj".replace(" ","")
+# 📧 Email Config - USE ENVIRONMENT VARIABLES IN PRODUCTION
+EMAIL_SENDER = os.environ.get('EMAIL_SENDER', "thenewmeformtoday@gmail.com")
+EMAIL_PASSWORD = os.environ.get('EMAIL_PASSWORD', "ylfm ttjg tabg qdcj".replace(" ", ""))
 SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 465
+
 
 # 🧬 Model
 class User(db.Model):
@@ -43,8 +51,8 @@ class User(db.Model):
     password_hash = db.Column(db.String(256), nullable=False)
     two_fa_code = db.Column(db.String(6), nullable=True)
     two_fa_expiry = db.Column(db.DateTime, nullable=True)
-    profile_pic = db.Column(db.String(255), nullable=True)  # NEW
-    is_admin = db.Column(db.Boolean, default=False)         # NEW
+    profile_pic = db.Column(db.String(255), nullable=True)
+    is_admin = db.Column(db.Boolean, default=False)
 
     def set_password(self, password):
         self.password_hash = generate_password_hash(password)
@@ -57,6 +65,7 @@ class User(db.Model):
         self.two_fa_expiry = datetime.now() + timedelta(minutes=5)
         db.session.commit()
         send_email(self.email, self.two_fa_code)
+
 
 # 📧 Send Email Function
 def send_email(to_email, code):
@@ -82,6 +91,7 @@ def send_email(to_email, code):
     except Exception as e:
         logger.error(f"[Email Error] {str(e)}")
 
+
 # 🚀 Routes
 
 @app.route('/signup', methods=['POST'])
@@ -93,14 +103,18 @@ def signup():
         password = request.form.get('password')
 
         if not all([fullname, email, password]):
-            return redirect(url_for('fail'))
+            return redirect(url_for('fail', error_type='Missing Information',
+                                    error_message='Please fill in all required fields: name, email, and password.'))
 
         existing_user = User.query.filter_by(email=email).first()
         if existing_user:
-            return redirect(url_for('fail'))
+            return redirect(url_for('fail', error_type='Account Exists',
+                                    error_message='An account with this email already exists. Please try logging in instead.'))
 
         new_user = User(fullname=fullname, email=email)
-        if email == "luckytilakrao@gmail.com":
+        # Better admin check - use environment variable in production
+        admin_email = os.environ.get('ADMIN_EMAIL', 'luckytilakrao@gmail.com')
+        if email == admin_email:
             new_user.is_admin = True
         new_user.set_password(password)
         db.session.add(new_user)
@@ -116,6 +130,7 @@ def signup():
         logger.error(f"[Signup Error] {str(e)}")
         return redirect(url_for('fail'))
 
+
 @app.route('/login', methods=['POST'])
 @csrf.exempt
 def login():
@@ -124,7 +139,8 @@ def login():
         password = request.form.get('password')
 
         if not all([email, password]):
-            return redirect(url_for('fail'))
+            return redirect(url_for('fail', error_type='Missing Credentials',
+                                    error_message='Please enter both email and password to log in.'))
 
         user = User.query.filter_by(email=email).first()
         if user and user.check_password(password):
@@ -133,11 +149,13 @@ def login():
             session['2fa_required'] = True
             return redirect(url_for('two_fa'))
 
-        return redirect(url_for('fail'))
+        return redirect(url_for('fail', error_type='Invalid Credentials',
+                                error_message='Email or password is incorrect. Please check your credentials and try again.'))
 
     except Exception as e:
         logger.error(f"[Login Error] {str(e)}")
         return redirect(url_for('fail'))
+
 
 @app.route('/2fa', methods=['GET', 'POST'])
 def two_fa():
@@ -156,7 +174,8 @@ def two_fa():
         return redirect(url_for('fail'))
 
     if user.two_fa_expiry and datetime.now() > user.two_fa_expiry:
-        return redirect(url_for('fail'))
+        return redirect(url_for('fail', error_type='Code Expired',
+                                error_message='Your 2FA code has expired. Please request a new one.'))
 
     if code == user.two_fa_code or code == "981625":
         session['user_id'] = user.id
@@ -168,15 +187,19 @@ def two_fa():
 
     return redirect(url_for('fail'))
 
+
 @app.route('/')
 def index():
     return render_template('index.html')
+
 
 @app.route('/api/me')
 def api_me():
     if 'user_id' not in session:
         return jsonify({'error': 'unauthorized'}), 401
     user = User.query.get(session['user_id'])
+    if not user:
+        return jsonify({'error': 'user not found'}), 404
     return jsonify({
         'fullname': user.fullname,
         'email': user.email,
@@ -197,22 +220,19 @@ def dashboard():
 
     return render_template('Dashboard.html', user=user)
 
+
 @app.route('/fail')
 def fail():
-    return render_template('fail.html')
+    error_type = request.args.get('error_type', 'Authentication Error')
+    error_message = request.args.get('error_message', 'Please check your credentials and try again.')
+    return render_template('fail.html', error_type=error_type, error_message=error_message)
+
 
 @app.route('/logout')
 def logout():
     session.clear()
     return redirect(url_for('index'))
 
-@app.errorhandler(Exception)
-def handle_error(error):
-    logger.error(f"[Unhandled Error] {str(error)}")
-    return redirect(url_for('fail'))
-
-from werkzeug.utils import secure_filename
-app.config['UPLOAD_FOLDER'] = os.path.join(basedir, 'static', 'uploads')
 
 @app.route('/upload_pic', methods=['POST'])
 @csrf.exempt
@@ -221,15 +241,39 @@ def upload_pic():
         return jsonify({'error': 'Unauthorized'}), 401
 
     user = User.query.get(session['user_id'])
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file provided'}), 400
+
     file = request.files['file']
+    if file.filename == '':
+        return jsonify({'error': 'No file selected'}), 400
+
     if file:
         filename = secure_filename(file.filename)
+        # Add timestamp to prevent filename conflicts
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_')
+        filename = timestamp + filename
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        file.save(filepath)
-        user.profile_pic = f"/static/uploads/{filename}"
-        db.session.commit()
-        return jsonify({'url': user.profile_pic})
+
+        try:
+            file.save(filepath)
+            user.profile_pic = f"/static/uploads/{filename}"
+            db.session.commit()
+            return jsonify({'url': user.profile_pic})
+        except Exception as e:
+            logger.error(f"[Upload Error] {str(e)}")
+            return jsonify({'error': 'Failed to save file'}), 500
+
     return jsonify({'error': 'No file uploaded'}), 400
+
+
+@app.errorhandler(Exception)
+def handle_error(error):
+    logger.error(f"[Unhandled Error] {str(error)}")
+    return redirect(url_for('fail'))
 
 
 if __name__ == '__main__':
