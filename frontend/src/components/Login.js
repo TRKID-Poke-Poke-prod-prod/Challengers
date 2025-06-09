@@ -1,5 +1,23 @@
 import React, { useState } from 'react';
 import axios from 'axios';
+document.querySelector('#signup').addEventListener('submit', function (e) {
+    const button = this.querySelector('.submit-button');
+    const buttonText = button.querySelector('.button-text');
+    const loading = button.querySelector('.loading');
+
+    buttonText.style.opacity = '0';
+    loading.style.display = 'block';
+    button.style.pointerEvents = 'none';
+
+    // 🥳 Trigger confetti
+    setTimeout(() => {
+        confetti({
+            particleCount: 100,
+            spread: 70,
+            origin: { y: 0.6 }
+        });
+    }, 500);
+});
 
 export default function Login() {
     const [formData, setFormData] = useState({

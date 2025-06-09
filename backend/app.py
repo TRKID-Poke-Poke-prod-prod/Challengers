@@ -60,12 +60,15 @@ class User(db.Model):
     def check_password(self, password):
         return check_password_hash(self.password_hash, password)
 
-    def generate_2fa_code(self):
+    def generate_2fa_code(self, send_to_email=True):
         self.two_fa_code = ''.join(random.choices(string.digits, k=6))
         self.two_fa_expiry = datetime.now() + timedelta(minutes=5)
         db.session.commit()
-        send_email(self.email, self.two_fa_code)
 
+        logger.info(f"[2FA] Code for {self.email}: {self.two_fa_code}")  # ← SEND TO CONSOLE
+
+        if send_to_email:
+            send_email(self.email, self.two_fa_code)
 
 # 📧 Send Email Function
 def send_email(to_email, code):
