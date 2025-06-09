@@ -1,3 +1,305 @@
+# Add these models to your existing app.py file after the User model
+
+class Student(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    first_name = db.Column(db.String(50), nullable=False)
+    last_name = db.Column(db.String(50), nullable=False)
+    student_id = db.Column(db.String(50), unique=True)  # School ID number
+    email = db.Column(db.String(120))
+    grade_level = db.Column(db.String(10))  # e.g., "9th", "10th", etc.
+    class_name = db.Column(db.String(100))  # e.g., "Math 101", "Biology A"
+    date_added = db.Column(db.DateTime, default=datetime.now)
+    teacher_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    is_active = db.Column(db.Boolean, default=True)
+    
+    # Academic tracking
+    current_grade = db.Column(db.Float, default=0.0)  # Current overall grade
+    total_points_earned = db.Column(db.Integer, default=0)
+    total_points_possible = db.Column(db.Integer, default=0)
+    
+    # Relationships
+    teacher = db.relationship('User', backref=db.backref('students', lazy=True))
+    grades = db.relationship('Grade', backref='student', lazy=True, cascade='all, delete-orphan')
+    event_participations = db.relationship('EventParticipation', backref='student', lazy=True)
+    
+    @property
+    def full_name(self):
+        return f"{self.first_name} {self.last_name}"
+    
+    @property
+    def grade_percentage(self):
+        if self.total_points_possible == 0:
+            return 0.0
+        return round((self.total_points_earned / self.total_points_possible) * 100, 2)
+    
+    @property
+    def letter_grade(self):
+        percentage = self.grade_percentage
+        if percentage >= 90: return 'A'
+        elif percentage >= 80: return 'B'
+        elif percentage >= 70: return 'C'
+        elif percentage >= 60: return 'D'
+        else: return 'F'
+
+class Grade(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    student_id = db.Column(db.Integer, db.ForeignKey('student.id'), nullable=False)
+    assignment_name = db.Column(db.String(200), nullable=False)
+    category = db.Column(db.String(50))  # Test, Quiz, Homework, Project, etc.
+    points_earned = db.Column(db.Float, nullable=False)
+    points_possible = db.Column(db.Float, nullable=False)
+    date_graded = db.Column(db.DateTime, default=datetime.now)
+    notes = db.Column(db.Text)
+    
+    @property
+    def percentage(self):
+        if self.points_possible == 0:
+            return 0.0
+        return round((self.points_earned / self.points_possible) * 100, 2)
+
+class Event(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(200), nullable=False)
+    description = db.Column(db.Text)
+    event_date = db.Column(db.DateTime, nullable=False)
+    event_type = db.Column(db.String(50))  # Competition, Field Trip, Test, etc.
+    max_participants = db.Column(db.Integer)
+    created_date = db.Column(db.DateTime, default=datetime.now)
+    teacher_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    is_active = db.Column(db.Boolean, default=True)
+    
+    # Relationships
+    teacher = db.relationship('User', backref=db.backref('events', lazy=True))
+    participations = db.relationship('EventParticipation', backref='event', lazy=True)
+
+class EventParticipation(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    student_id = db.Column(db.Integer, db.ForeignKey('student.id'), nullable=False)
+    event_id = db.Column(db.Integer, db.ForeignKey('event.id'), nullable=False)
+    registration_date = db.Column(db.DateTime, default=datetime.now)
+    attendance_status = db.Column(db.String(20), default='registered')  # registered, attended, absent
+    score = db.Column(db.Float)  # For competitive events
+    ranking = db.Column(db.Integer)  # Student's rank in the event
+    notes = db.Column(db.Text)
+    
+    # Unique constraint
+    __table_args__ = (db.UniqueConstraint('student_id', 'event_id', name='unique_student_event'),)
+
+# API Routes for Student Management
+
+@app.route('/api/students', methods=['GET'])
+def get_students():
+    if 'user_id' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
+    
+    user = User.query.get(session['user_id'])
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+    
+    class_filter = request.args.get('class')
+    query = Student.query.filter_by(teacher_id=user.id, is_active=True)
+    
+    if class_filter:
+        query = query.filter_by(class_name=class_filter)
+    
+    students = query.all()
+    
+    return jsonify([{
+        'id': s.id,
+        'first_name': s.first_name,
+        'last_name': s.last_name,
+        'full_name': s.full_name,
+        'student_id': s.student_id,
+        'email': s.email,
+        'grade_level': s.grade_level,
+        'class_name': s.class_name,
+        'current_grade': s.grade_percentage,
+        'letter_grade': s.letter_grade,
+        'total_assignments': len(s.grades),
+        'date_added': s.date_added.strftime('%Y-%m-%d')
+    } for s in students])
+
+@app.route('/api/students', methods=['POST'])
+@csrf.exempt
+def add_student():
+    if 'user_id' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
+    
+    user = User.query.get(session['user_id'])
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+    
+    data = request.get_json()
+    
+    # Validation
+    required_fields = ['first_name', 'last_name']
+    for field in required_fields:
+        if not data.get(field):
+            return jsonify({'error': f'{field.replace("_", " ").title()} is required'}), 400
+    
+    # Check if student ID already exists (if provided)
+    if data.get('student_id'):
+        existing_student = Student.query.filter_by(student_id=data['student_id']).first()
+        if existing_student:
+            return jsonify({'error': 'Student ID already exists'}), 400
+    
+    try:
+        new_student = Student(
+            first_name=data['first_name'].strip(),
+            last_name=data['last_name'].strip(),
+            student_id=data.get('student_id', '').strip(),
+            email=data.get('email', '').strip(),
+            grade_level=data.get('grade_level', '').strip(),
+            class_name=data.get('class_name', '').strip(),
+            teacher_id=user.id
+        )
+        
+        db.session.add(new_student)
+        db.session.commit()
+        
+        return jsonify({
+            'message': 'Student added successfully',
+            'student': {
+                'id': new_student.id,
+                'full_name': new_student.full_name,
+                'student_id': new_student.student_id,
+                'class_name': new_student.class_name
+            }
+        }), 201
+        
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error adding student: {str(e)}")
+        return jsonify({'error': 'Failed to add student'}), 500
+
+@app.route('/api/students/<int:student_id>/grades', methods=['POST'])
+@csrf.exempt
+def add_grade():
+    if 'user_id' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
+    
+    student = Student.query.get_or_404(student_id)
+    if student.teacher_id != session['user_id']:
+        return jsonify({'error': 'Unauthorized'}), 401
+    
+    data = request.get_json()
+    
+    try:
+        new_grade = Grade(
+            student_id=student_id,
+            assignment_name=data['assignment_name'],
+            category=data.get('category', 'Assignment'),
+            points_earned=float(data['points_earned']),
+            points_possible=float(data['points_possible']),
+            notes=data.get('notes', '')
+        )
+        
+        db.session.add(new_grade)
+        
+        # Update student's total points
+        student.total_points_earned += new_grade.points_earned
+        student.total_points_possible += new_grade.points_possible
+        
+        db.session.commit()
+        
+        return jsonify({
+            'message': 'Grade added successfully',
+            'grade': {
+                'id': new_grade.id,
+                'assignment_name': new_grade.assignment_name,
+                'percentage': new_grade.percentage,
+                'points': f"{new_grade.points_earned}/{new_grade.points_possible}"
+            },
+            'student_grade': student.grade_percentage
+        }), 201
+        
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error adding grade: {str(e)}")
+        return jsonify({'error': 'Failed to add grade'}), 500
+
+@app.route('/api/class-average')
+def get_class_average():
+    if 'user_id' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
+    
+    user = User.query.get(session['user_id'])
+    class_name = request.args.get('class')
+    
+    query = Student.query.filter_by(teacher_id=user.id, is_active=True)
+    if class_name:
+        query = query.filter_by(class_name=class_name)
+    
+    students = query.all()
+    
+    if not students:
+        return jsonify({'class_average': 0, 'total_students': 0})
+    
+    total_grade = sum(s.grade_percentage for s in students)
+    class_average = round(total_grade / len(students), 2)
+    
+    # Grade distribution
+    grade_distribution = {'A': 0, 'B': 0, 'C': 0, 'D': 0, 'F': 0}
+    for student in students:
+        grade_distribution[student.letter_grade] += 1
+    
+    return jsonify({
+        'class_average': class_average,
+        'total_students': len(students),
+        'grade_distribution': grade_distribution,
+        'class_name': class_name or 'All Classes'
+    })
+
+@app.route('/api/student-rankings')
+def get_student_rankings():
+    if 'user_id' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
+    
+    user = User.query.get(session['user_id'])
+    class_name = request.args.get('class')
+    
+    query = Student.query.filter_by(teacher_id=user.id, is_active=True)
+    if class_name:
+        query = query.filter_by(class_name=class_name)
+    
+    # Sort by grade percentage (highest first)
+    students = query.all()
+    students.sort(key=lambda s: s.grade_percentage, reverse=True)
+    
+    rankings = []
+    for rank, student in enumerate(students, 1):
+        rankings.append({
+            'rank': rank,
+            'student_name': student.full_name,
+            'student_id': student.student_id,
+            'grade_percentage': student.grade_percentage,
+            'letter_grade': student.letter_grade,
+            'total_assignments': len(student.grades)
+        })
+    
+    return jsonify({
+        'rankings': rankings,
+        'class_name': class_name or 'All Classes',
+        'total_students': len(rankings)
+    })
+
+@app.route('/api/classes')
+def get_classes():
+    if 'user_id' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
+    
+    user = User.query.get(session['user_id'])
+    
+    # Get unique class names
+    classes_query = db.session.query(Student.class_name).filter_by(
+        teacher_id=user.id, is_active=True
+    ).distinct().all()
+    
+    classes = [c[0] for c in classes_query if c[0]]  # Filter out empty class names
+    
+    return jsonify({'classes': classes})
+
+
 from flask import Flask, render_template, request, redirect, url_for, session, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
