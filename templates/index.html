@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8" />
+    <title>Challenger</title>
+    <style>
+        #challenger {
+            border: 2px solid black;
+        }
+    </style>
+</head>
+<body>
+    <div>
+        Welcome to Challenger
+    </div>
+    <canvas id="challenger" width="800" height="450"></canvas>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <script src="{{ url_for('static', filename='js/game.js') }}"></script>
+</body>
+</html>
