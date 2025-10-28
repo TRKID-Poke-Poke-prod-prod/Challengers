@@ -1,19 +1,80 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <meta charset="UTF-8" />
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Challenger</title>
-    <style>
-        #challenger {
-            border: 2px solid black;
-        }
-    </style>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/header.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/game.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/auth.css') }}">
 </head>
 <body>
-    <div>
-        Welcome to Challenger
-    </div>
-    <canvas id="challenger" width="800" height="450"></canvas>
+    <header id="header">
+        <h1>Challenger</h1>
+        {% if current_user.is_authenticated %}
+            <a href="{{ url_for('profile') }}" class="auth-button profile-button">
+                Profile ({{ current_user.username }})
+            </a>
+        {% else %}
+            <a href="{{ url_for('login') }}" class="auth-button">
+                Login
+            </a>
+        {% endif %}
+    </header>
+    
+    <main id="flex_main">
+        <div class="spacer"></div>
+        <div id="game-container">
+            {% if not current_user.is_authenticated %}
+            <div id="guest-overlay">
+                <div class="guest-panel">
+                    <h2>Welcome to Challenger!</h2>
+                    <p>Enter a name to play as a guest, or login for a full account</p>
+                    
+                    <div class="input-group">
+                        <label for="guest-name">Your Name</label>
+                        <input type="text" id="guest-name" placeholder="Enter your name..." maxlength="20">
+                    </div>
+                    
+                    <div class="button-group">
+                        <button id="play-guest-btn" class="btn btn-primary">Play as Guest</button>
+                        <a href="{{ url_for('login') }}" class="btn btn-secondary">Login</a>
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+            <canvas id="challenger" width="800" height="450"></canvas>
+        </div>
+        <div class="spacer"></div>
+    </main>
+    
+    <script>
+        // Pass user data to JavaScript
+        const userData = {
+            isAuthenticated: {{ 'true' if current_user.is_authenticated else 'false' }},
+            username: {{ ('"%s"' % current_user.username) if current_user.is_authenticated else 'null' }}
+        };
+        
+        // Handle guest play
+        {% if not current_user.is_authenticated %}
+        document.getElementById('play-guest-btn').addEventListener('click', function() {
+            const guestName = document.getElementById('guest-name').value.trim();
+            if (guestName) {
+                userData.username = guestName;
+                document.getElementById('guest-overlay').classList.add('hidden');
+            } else {
+                alert('Please enter your name to continue');
+            }
+        });
+        
+        // Allow Enter key to start game
+        document.getElementById('guest-name').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                document.getElementById('play-guest-btn').click();
+            }
+        });
+        {% endif %}
+    </script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
     <script src="{{ url_for('static', filename='js/game.js') }}"></script>
 </body>
