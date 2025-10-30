@@ -1,7 +1,8 @@
-requirments = ['flask', 'flask_socketio', 'flask_login']
-import os, sys
+import os
+import sys
+import secrets
 
-for i in requirments:
+for i in ['flask', 'flask_socketio', 'flask_login', 'eventlet','werkzeug']:
     try:
         __import__(i.replace('-', '_'))
     except:
@@ -14,9 +15,17 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import timedelta
 
 app = Flask(__name__)
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', secrets.token_hex(32))
 app.config['REMEMBER_COOKIE_DURATION'] = timedelta(days=28)
 
-socketio = SocketIO(app, cors_allowed_origins="*")
+# CRITICAL: Configure SocketIO properly for production
+socketio = SocketIO(app, 
+                    cors_allowed_origins="*",
+                    async_mode='eventlet',
+                    logger=True,
+                    engineio_logger=True,
+                    ping_timeout=60,
+                    ping_interval=25)
 
 # Initialize Flask-Login
 login_manager = LoginManager()
