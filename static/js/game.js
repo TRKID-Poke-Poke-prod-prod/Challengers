@@ -4,9 +4,14 @@ const socket = io();
 const map_width = 8500
 const map_height = 4781
 
+let display_projectile = false
 let show_coords = false
+let angle = 0
 
 let playerName = userData.username || 'Guest_' + Math.floor(Math.random() * 1000);
+
+// Add projectiles array
+const projectiles = [];
 
 class Vector2D {
     constructor(x, y) {
@@ -19,10 +24,91 @@ class Vector2D {
     }
 }
 
-
 const otherPlayers = new Map();
 
-// Player class with absolute coordinates - MOVED TO TOP
+// Projectile class for straight-line projectiles
+class Projectile {
+    constructor(absX, absY, rotation, speed = 10, damage = 10, ownerId = null) {
+        this.absX = absX;
+        this.absY = absY;
+        this.rotation = rotation; // in radians
+        this.speed = speed;
+        this.damage = damage;
+        this.ownerId = ownerId;
+        this.radius = 5; // collision radius
+    }
+
+    update() {
+        // Move projectile in straight line
+        this.absX += Math.cos(this.rotation) * this.speed;
+        this.absY += Math.sin(this.rotation) * this.speed;
+    }
+
+    isExpired() {
+        // Remove if out of bounds
+        return this.absX < 0 || this.absX > map_width ||
+            this.absY < 0 || this.absY > map_height;
+    }
+
+    // Check collision with a player (circle vs triangle)
+    checkPlayerCollision(player) {
+        // Don't collide with owner
+        if (this.ownerId === player.id) {
+            return false;
+        }
+
+        player.get_verts();
+
+        // Simple circle-triangle collision
+        // Check if projectile center is inside triangle or close to any edge
+        const verts = player.verts;
+
+        // Point in triangle test
+        function sign(p1, p2, p3) {
+            return (p1.x - p3.x) * (p2.y - p3.y) - (p2.x - p3.x) * (p1.y - p3.y);
+        }
+
+        const d1 = sign({ x: this.absX, y: this.absY }, verts[0], verts[1]);
+        const d2 = sign({ x: this.absX, y: this.absY }, verts[1], verts[2]);
+        const d3 = sign({ x: this.absX, y: this.absY }, verts[2], verts[0]);
+
+        const hasNeg = (d1 < 0) || (d2 < 0) || (d3 < 0);
+        const hasPos = (d1 > 0) || (d2 > 0) || (d3 > 0);
+
+        const isInside = !(hasNeg && hasPos);
+
+        if (isInside) return true;
+
+        // Check distance to edges
+        for (let i = 0; i < verts.length; i++) {
+            const v1 = verts[i];
+            const v2 = verts[(i + 1) % verts.length];
+
+            // Distance from point to line segment
+            const dx = v2.x - v1.x;
+            const dy = v2.y - v1.y;
+            const lengthSquared = dx * dx + dy * dy;
+
+            let t = ((this.absX - v1.x) * dx + (this.absY - v1.y) * dy) / lengthSquared;
+            t = Math.max(0, Math.min(1, t));
+
+            const closestX = v1.x + t * dx;
+            const closestY = v1.y + t * dy;
+
+            const distX = this.absX - closestX;
+            const distY = this.absY - closestY;
+            const distance = Math.sqrt(distX * distX + distY * distY);
+
+            if (distance <= this.radius) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+}
+
+// Player class with absolute coordinates
 class Player {
     constructor(absX, absY, absRotation, action, health, id, name, scale = 1) {
         this.absX = absX;
@@ -43,7 +129,8 @@ class Player {
             speed: 3,
             mana_regen: 2,
             regen: 1,
-            stamina_regen: 1
+            stamina_regen: 1,
+            shoot_strength: 10 // Projectile damage
         };
         this.effects = {};
     }
@@ -53,14 +140,12 @@ class Player {
         const s = Math.sin(this.absRotation);
         const c = Math.cos(this.absRotation);
 
-        // Define vertices relative to center (matching your draw_triangle)
         const localVerts = [
-            { x: 0, y: -10 * scale * 2 },      // top
-            { x: 10 * scale, y: 10 * scale },   // bottom right
-            { x: -10 * scale, y: 10 * scale }   // bottom left
+            { x: 0, y: -10 * scale * 2 },
+            { x: 10 * scale, y: 10 * scale },
+            { x: -10 * scale, y: 10 * scale }
         ];
 
-        // Rotate and translate each vertex to world space
         this.verts = localVerts.map(v => ({
             x: this.absX + (v.x * c - v.y * s),
             y: this.absY + (v.x * s + v.y * c)
@@ -69,7 +154,6 @@ class Player {
         return this.verts;
     }
 
-    // Get the edge normals (perpendicular vectors) for SAT
     getAxes() {
         const axes = [];
         const verts = this.verts.length > 0 ? this.verts : this.get_verts();
@@ -78,19 +162,16 @@ class Player {
             const v1 = verts[i];
             const v2 = verts[(i + 1) % verts.length];
 
-            // Edge vector
             const edge = {
                 x: v2.x - v1.x,
                 y: v2.y - v1.y
             };
 
-            // Normal (perpendicular) - rotate edge 90 degrees
             const normal = {
                 x: -edge.y,
                 y: edge.x
             };
 
-            // Normalize the vector
             const length = Math.sqrt(normal.x * normal.x + normal.y * normal.y);
             axes.push({
                 x: normal.x / length,
@@ -101,7 +182,6 @@ class Player {
         return axes;
     }
 
-    // Project the triangle onto an axis and return min/max
     projectOntoAxis(axis) {
         const verts = this.verts.length > 0 ? this.verts : this.get_verts();
 
@@ -117,56 +197,43 @@ class Player {
         return { min, max };
     }
 
-    // SAT collision detection with MTV (Minimum Translation Vector)
     SAT(enemy) {
-        // Update vertices for both triangles
         this.get_verts();
         enemy.get_verts();
 
-        // Get all axes to test (normals from both triangles)
         const axes = [...this.getAxes(), ...enemy.getAxes()];
 
         let minOverlap = Infinity;
         let smallestAxis = null;
 
-        // Test each axis
         for (const axis of axes) {
             const proj1 = this.projectOntoAxis(axis);
             const proj2 = enemy.projectOntoAxis(axis);
 
-            // Check if projections overlap
             if (proj1.max < proj2.min || proj2.max < proj1.min) {
-                // Found a separating axis - no collision
                 return false;
             }
 
-            // Calculate overlap on this axis
             const overlap = Math.min(proj1.max, proj2.max) - Math.max(proj1.min, proj2.min);
 
-            // Track the smallest overlap (this will be our MTV)
             if (overlap < minOverlap) {
                 minOverlap = overlap;
                 smallestAxis = axis;
             }
         }
 
-        // No separating axis found - collision detected!
-        // Store the MTV for sliding calculations
         this.lastCollisionNormal = smallestAxis;
         this.lastCollisionDepth = minOverlap;
 
         return true;
     }
 
-    // Get collision data (normal and penetration depth) - assumes SAT was already called
     getCollisionData(enemy) {
         if (this.lastCollisionNormal && this.lastCollisionDepth > 0) {
-            // Ensure normal points from enemy to this player
             const dx = this.absX - enemy.absX;
             const dy = this.absY - enemy.absY;
             const dot = dx * this.lastCollisionNormal.x + dy * this.lastCollisionNormal.y;
 
-            // Flip normal if it points the wrong way
             if (dot < 0) {
                 this.lastCollisionNormal = {
                     x: -this.lastCollisionNormal.x,
@@ -200,9 +267,10 @@ class Player {
     clamp_to_borders() {
         this.get_verts();
 
-        // Find the bounds of all vertices
-        let minX = Infinity, maxX = -Infinity;
-        let minY = Infinity, maxY = -Infinity;
+        let minX = Infinity,
+            maxX = -Infinity;
+        let minY = Infinity,
+            maxY = -Infinity;
 
         for (let vert of this.verts) {
             minX = Math.min(minX, vert.x);
@@ -211,7 +279,6 @@ class Player {
             maxY = Math.max(maxY, vert.y);
         }
 
-        // Clamp position if any vertex is out of bounds
         if (minX < 0) {
             this.absX += (0 - minX);
         }
@@ -226,9 +293,7 @@ class Player {
         }
     }
 
-    // Broad-phase check (fast pre-filter before SAT)
     check_player_collision(enemy) {
-
         const dx = this.absX - enemy.absX;
         const dy = this.absY - enemy.absY;
         const distance = Math.sqrt(dx * dx + dy * dy);
@@ -238,16 +303,20 @@ class Player {
             return false;
         }
 
-        // Circles overlap, do precise SAT check
         return this.SAT(enemy);
+    }
+
+    takeDamage(damage) {
+        this.health -= damage;
+        if (this.health < 0) this.health = 0;
+        console.log(`${this.name} took ${damage} damage. Health: ${this.health}`);
     }
 }
 
 socket.on('connect', () => {
     console.log('Connected to server');
     const playerName = userData.username || 'Guest_' + Math.floor(Math.random() * 1000);
-    
-    // Send only serializable data - no class instances
+
     socket.emit('player_join', {
         x: game.player.absX,
         y: game.player.absY,
@@ -261,8 +330,6 @@ socket.on('connect', () => {
 });
 
 socket.on('players_update', (players) => {
-    console.log('Received players update:', Object.keys(players).length, 'players');
-    
     const oldPlayersData = new Map(otherPlayers);
     otherPlayers.clear();
     const currentPlayerIds = new Set();
@@ -275,7 +342,6 @@ socket.on('players_update', (players) => {
                 console.log(`Player ${data.name} joined the game`);
             }
 
-            // Convert received data to Player instance
             const playerInstance = new Player(
                 data.x,
                 data.y,
@@ -298,6 +364,24 @@ socket.on('players_update', (players) => {
     });
 });
 
+socket.on('projectile_fired', (data) => {
+    const projectile = new Projectile(
+        data.x,
+        data.y,
+        data.rotation,
+        data.speed,
+        data.damage,
+        data.ownerId
+    );
+    projectiles.push(projectile);
+});
+
+socket.on('player_hit', (data) => {
+    if (data.playerId === socket.id) {
+        game.player.takeDamage(data.damage);
+    }
+});
+
 socket.on('disconnect', () => {
     console.log('Disconnected from server');
 });
@@ -308,28 +392,24 @@ class artist {
         this.canvas = canvas;
         this.backgroundImg = image;
         this.loaded = false;
+        this.lastSpacePress = false;
 
-        // Player absolute coordinates in world space
-        // World space: (0,0) is top-left of the background image
-        // Spawn in top-left quarter circle with radius 750
         const spawnRadius = Math.random() * 750;
-        const spawnAngle = Math.random() * (Math.PI / 2); // 0 to 90 degrees (quarter circle)
+        const spawnAngle = Math.random() * (Math.PI / 2);
 
-        // Create player as a Player instance, not a plain object
         this.player = new Player(
-            spawnRadius * Math.cos(spawnAngle),  // absX
-            spawnRadius * Math.sin(spawnAngle),  // absY
-            0,                                    // absRotation
-            'idle',                               // action
-            100,                                  // health
-            'local',                              // id
-            playerName,                           // name
-            1                                     // scale
+            spawnRadius * Math.cos(spawnAngle),
+            spawnRadius * Math.sin(spawnAngle),
+            0,
+            'idle',
+            100,
+            'local',
+            playerName,
+            1
         );
 
-        // Camera properties
         this.camera = {
-            rotation: 0  // How much the camera/view is rotated
+            rotation: 0
         };
 
         this.backgroundImg.onload = () => {
@@ -343,13 +423,9 @@ class artist {
 
         this.context.save();
 
-        // Translate to center of canvas
         this.context.translate(this.canvas.width / 2, this.canvas.height / 2);
-
-        // Apply camera rotation
         this.context.rotate(this.camera.rotation);
 
-        // Calculate diagonal for coverage when rotated
         const diagonal = Math.sqrt(
             this.canvas.width * this.canvas.width +
             this.canvas.height * this.canvas.height
@@ -357,28 +433,23 @@ class artist {
 
         const drawSize = diagonal;
 
-        // Center view on player's absolute position
         const sourceX = this.player.absX - drawSize / 2;
         const sourceY = this.player.absY - drawSize / 2;
         const sourceWidth = drawSize;
         const sourceHeight = drawSize;
 
-        // Clamp to image boundaries
         const actualSourceX = Math.max(0, sourceX);
         const actualSourceY = Math.max(0, sourceY);
         const actualSourceWidth = Math.min(sourceWidth, this.backgroundImg.width - actualSourceX);
         const actualSourceHeight = Math.min(sourceHeight, this.backgroundImg.height - actualSourceY);
 
-        // Calculate destination offset if near edges
         const destOffsetX = actualSourceX - sourceX;
         const destOffsetY = actualSourceY - sourceY;
 
         this.context.drawImage(
             this.backgroundImg,
             actualSourceX, actualSourceY,
-            actualSourceWidth, actualSourceHeight,
-            -drawSize / 2 + destOffsetX,
-            -drawSize / 2 + destOffsetY,
+            actualSourceWidth, actualSourceHeight, -drawSize / 2 + destOffsetX, -drawSize / 2 + destOffsetY,
             actualSourceWidth,
             actualSourceHeight
         );
@@ -386,9 +457,11 @@ class artist {
         this.context.restore();
     }
 
-    draw_triangle(x, y, scale, rotation, color = 'blue') {
+    draw_triangle(x, y, rotation, color = 'blue', scale = 0) {
         this.context.save();
-        this.scale = scale;
+        if (scale == 0) {
+            scale = this.player.attributes.scale;
+        }
         this.context.translate(x, y);
         this.context.rotate(rotation);
 
@@ -407,33 +480,77 @@ class artist {
         this.context.restore();
     }
 
-    // Convert absolute world coordinates to screen coordinates
+    draw_projectile(projectile) {
+        const screenPos = this.worldToScreen(projectile.absX, projectile.absY, projectile.rotation);
+
+        this.context.save();
+
+        const projectileLength = 20;
+        const deltaX = projectileLength * Math.cos(screenPos.rotation);
+        const deltaY = projectileLength * Math.sin(screenPos.rotation);
+
+        this.context.beginPath();
+        this.context.moveTo(screenPos.x, screenPos.y);
+        this.context.lineTo(screenPos.x + deltaX, screenPos.y + deltaY);
+
+        this.context.lineWidth = 4;
+        this.context.strokeStyle = 'red';
+        this.context.stroke();
+
+        this.context.restore();
+    }
+
     worldToScreen(worldX, worldY, worldRotation) {
-        // Calculate position relative to player
         const relX = worldX - this.player.absX;
         const relY = worldY - this.player.absY;
 
-        // Rotate relative position by camera rotation (same as background)
         const cosRot = Math.cos(this.camera.rotation);
         const sinRot = Math.sin(this.camera.rotation);
         const rotatedX = relX * cosRot - relY * sinRot;
         const rotatedY = relX * sinRot + relY * cosRot;
 
-        // Convert to screen coordinates
         const screenX = this.canvas.width / 2 + rotatedX;
         const screenY = this.canvas.height / 2 + rotatedY;
 
-        // Calculate screen rotation (world rotation + camera rotation)
         const screenRotation = worldRotation + this.camera.rotation;
 
         return { x: screenX, y: screenY, rotation: screenRotation };
+    }
+
+    shootProjectile() {
+        // Calculate projectile spawn position at the tip of the triangle
+        const scale = this.player.attributes.scale;
+        const tipDistance = 10 * scale * 2; // Distance to tip
+
+        // Spawn projectile at the tip of the triangle
+        const projectileX = this.player.absX + Math.sin(this.player.absRotation) * tipDistance;
+        const projectileY = this.player.absY - Math.cos(this.player.absRotation) * tipDistance;
+        console.log(angle);
+
+        const projectile = new Projectile(
+            projectileX,
+            projectileY,
+            this.player.absRotation + angle,
+            10,
+            this.player.attributes.shoot_strength,
+            socket.id
+        );
+        projectiles.push(projectile);
+
+        socket.emit('projectile_fired', {
+            x: projectile.absX,
+            y: projectile.absY,
+            rotation: projectile.rotation,
+            speed: 10,
+            damage: this.player.attributes.shoot_strength,
+            ownerId: socket.id
+        });
     }
 
     update() {
         const moveSpeed = this.player.attributes["speed"];
         const rotateSpeed = this.player.attributes["rotate_speed"];
 
-        // Rotate camera with Q/E
         if (pressedKeys['q'] || pressedKeys['Q']) {
             this.camera.rotation += rotateSpeed;
         }
@@ -441,7 +558,54 @@ class artist {
             this.camera.rotation -= rotateSpeed;
         }
 
-        // Calculate movement direction
+        // Shoot projectile with spacebar
+        if (pressedKeys[' '] && !this.lastSpacePress) {
+            this.shootProjectile();
+            this.lastSpacePress = true;
+        }
+        if (!pressedKeys[' ']) {
+            this.lastSpacePress = false;
+        }
+
+        // Update all projectiles and check collisions
+        for (let i = projectiles.length - 1; i >= 0; i--) {
+            projectiles[i].update();
+
+            let projectileHit = false;
+
+            // Check collision with local player
+            if (projectiles[i].checkPlayerCollision(this.player)) {
+                this.player.takeDamage(projectiles[i].damage);
+                // Emit hit to server
+                socket.emit('player_hit', {
+                    playerId: socket.id,
+                    damage: projectiles[i].damage,
+                    shooterId: projectiles[i].ownerId
+                });
+                projectileHit = true;
+            }
+
+            // Check collision with other players
+            if (!projectileHit) {
+                otherPlayers.forEach(player => {
+                    if (projectiles[i].checkPlayerCollision(player)) {
+                        // Emit hit to server
+                        socket.emit('player_hit', {
+                            playerId: player.id,
+                            damage: projectiles[i].damage,
+                            shooterId: projectiles[i].ownerId
+                        });
+                        projectileHit = true;
+                    }
+                });
+            }
+
+            // Remove projectile if it hit something or expired
+            if (projectileHit || projectiles[i].isExpired()) {
+                projectiles.splice(i, 1);
+            }
+        }
+
         let dx = 0;
         let dy = 0;
 
@@ -462,23 +626,18 @@ class artist {
             dy += Math.sin(this.player.absRotation) * moveSpeed;
         }
 
-        // Store original position
         const originalX = this.player.absX;
         const originalY = this.player.absY;
 
-        // Apply movement
         this.player.absX += dx;
         this.player.absY += dy;
         this.player.absRotation = -this.camera.rotation;
 
-        // Clamp to borders IMMEDIATELY after movement
         this.player.clamp_to_borders();
 
-        // Update dx/dy based on actual movement after clamping
         dx = this.player.absX - originalX;
         dy = this.player.absY - originalY;
 
-        // Player collisions
         otherPlayers.forEach(player => {
             if (this.player.check_player_collision(player)) {
                 const collisionData = this.player.getCollisionData(player);
@@ -508,10 +667,8 @@ class artist {
             }
         });
 
-        // Final border clamp after all collisions
         this.player.clamp_to_borders();
 
-        // Send position to server - only serializable data
         socket.emit('player_move', {
             x: this.player.absX,
             y: this.player.absY,
@@ -522,22 +679,56 @@ class artist {
         });
     }
 
+    drawHealthBar(x, y, rotation, health, maxHealth, scale) {
+        this.context.save();
+
+        const barWidth = 40 * scale;
+        const barHeight = 5;
+        const healthPercent = Math.max(0, Math.min(100, (health / maxHealth) * 100));
+        const filledWidth = (barWidth * healthPercent) / 100;
+
+        // Position below triangle base
+        const offsetY = 25 * scale;
+
+        this.context.translate(x, y + offsetY);
+        this.context.rotate(rotation);
+
+        // Draw gray background (empty health)
+        this.context.fillStyle = 'gray';
+        this.context.fillRect(-barWidth / 2, 0, barWidth, barHeight);
+
+        // Draw red health
+        this.context.fillStyle = 'red';
+        this.context.fillRect(-barWidth / 2, 0, filledWidth, barHeight);
+
+        // Draw percentage text below bar
+        this.context.rotate(-rotation); // Unrotate for text
+        this.context.fillStyle = 'white';
+        this.context.strokeStyle = 'black';
+        this.context.lineWidth = 2;
+        this.context.font = '12px Arial';
+        this.context.textAlign = 'center';
+        const percentText = Math.round(healthPercent) + '%';
+        this.context.strokeText(percentText, 0, barHeight + 12);
+        this.context.fillText(percentText, 0, barHeight + 12);
+
+        this.context.restore();
+    }
+
     drawOtherPlayers() {
         otherPlayers.forEach(player => {
-            // Convert player's absolute world position to screen position
             const screenPos = this.worldToScreen(
                 player.absX,
                 player.absY,
                 player.absRotation
             );
 
-            // Draw other players in red to distinguish them
             this.draw_triangle(
                 screenPos.x,
                 screenPos.y,
-                player.attributes.scale,
                 screenPos.rotation,
-                'red'
+                'red',
+                player.attributes.scale
             );
 
             // Draw player name
@@ -550,11 +741,20 @@ class artist {
             this.context.strokeText(player.name, screenPos.x, screenPos.y - 30);
             this.context.fillText(player.name, screenPos.x, screenPos.y - 30);
             this.context.restore();
+
+            // Draw health bar
+            this.drawHealthBar(
+                screenPos.x,
+                screenPos.y,
+                screenPos.rotation,
+                player.health,
+                player.attributes.max_health,
+                player.attributes.scale
+            );
         });
     }
 
     tick = () => {
-        // Placeholder for effects processing
         if (this.player.effects) {
             // Process effects here
         }
@@ -563,19 +763,33 @@ class artist {
     frame = () => {
         this.update();
 
-        // Clear canvas
+        if (this.player.health < 0) {
+            window.location.href = "https://www.youtube.com/results?search_query=how+to+aim";
+        }
+
         this.context.clearRect(0, 0, this.canvas.width, this.canvas.height);
 
-        // Draw background with camera rotation
         this.draw_background();
 
-        // Draw local player at center (always pointing up on screen)
-        this.draw_triangle(this.canvas.width / 2, this.canvas.height / 2, 1, 0, 'blue');
+        this.draw_triangle(this.canvas.width / 2, this.canvas.height / 2, 0, 'blue');
 
-        // Draw other players
+        // Draw local player health bar
+        this.drawHealthBar(
+            this.canvas.width / 2,
+            this.canvas.height / 2,
+            0,
+            this.player.health,
+            this.player.attributes.max_health,
+            this.player.attributes.scale
+        );
+
         this.drawOtherPlayers();
 
-        // Draw border
+        // Draw all projectiles
+        projectiles.forEach(projectile => {
+            this.draw_projectile(projectile);
+        });
+
         this.context.strokeStyle = "black";
         this.context.lineWidth = 2;
         this.context.strokeRect(0, 0, this.canvas.width, this.canvas.height);
@@ -583,7 +797,6 @@ class artist {
         requestAnimationFrame(this.frame);
     }
 }
-
 
 var background = new Image();
 background.src = '/static/img/map1.png';
@@ -594,11 +807,25 @@ function tp(x, y) {
     game.player.absY = y;
 }
 
-// Keyboard
 const pressedKeys = {};
 window.addEventListener("keydown", (event) => {
     pressedKeys[event.key] = true;
 });
+
+function isCapital(key) {
+    return key.length === 1 && key !== key.toLowerCase();
+}
+
 window.addEventListener("keyup", (event) => {
     pressedKeys[event.key] = false;
+
+    if (event.key === "Shift") {
+        for (const key in pressedKeys) {
+            if (pressedKeys.hasOwnProperty(key)) {
+                if (isCapital(key)) {
+                    pressedKeys[key] = false;
+                }
+            }
+        }
+    }
 });
