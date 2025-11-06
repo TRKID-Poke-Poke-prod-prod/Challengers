@@ -1,3 +1,5 @@
+// Complete fixed code - everything uses degrees, converts to radians only when needed
+
 const canvas = document.getElementById("challenger");
 const socket = io();
 
@@ -6,7 +8,7 @@ const map_height = 4781
 
 let display_projectile = false
 let show_coords = false
-let angle = 0
+let angle = -90
 
 let playerName = userData.username || 'Guest_' + Math.floor(Math.random() * 1000);
 
@@ -28,10 +30,10 @@ const otherPlayers = new Map();
 
 // Projectile class for straight-line projectiles
 class Projectile {
-    constructor(absX, absY, rotation, speed = 10, damage = 10, ownerId = null) {
+    constructor(absX, absY, rotationDeg, speed = 10, damage = 10, ownerId = null) {
         this.absX = absX;
         this.absY = absY;
-        this.rotation = rotation; // in radians
+        this.rotationDeg = rotationDeg; // Store in degrees
         this.speed = speed;
         this.damage = damage;
         this.ownerId = ownerId;
@@ -39,9 +41,11 @@ class Projectile {
     }
 
     update() {
+        // Convert to radians for math
+        const rotationRad = this.rotationDeg * Math.PI / 180;
         // Move projectile in straight line
-        this.absX += Math.cos(this.rotation) * this.speed;
-        this.absY += Math.sin(this.rotation) * this.speed;
+        this.absX += Math.cos(rotationRad) * this.speed;
+        this.absY += Math.sin(rotationRad) * this.speed;
     }
 
     isExpired() {
@@ -110,10 +114,10 @@ class Projectile {
 
 // Player class with absolute coordinates
 class Player {
-    constructor(absX, absY, absRotation, action, health, id, name, scale = 1) {
+    constructor(absX, absY, absRotationDeg = 0, action, health, id, name, scale = 1, max_health=100) {
         this.absX = absX;
         this.absY = absY;
-        this.absRotation = absRotation;
+        this.absRotationDeg = absRotationDeg; // Store in degrees
         this.action = action;
         this.health = health;
         this.stamina = 100;
@@ -124,8 +128,8 @@ class Player {
         this.lastCollisionDepth = 0;
         this.attributes = {
             scale: scale,
-            rotate_speed: 0.05,
-            max_health: health,
+            rotate_speed: 3, // degrees per frame
+            max_health: max_health,
             speed: 3,
             mana_regen: 2,
             regen: 1,
@@ -135,10 +139,15 @@ class Player {
         this.effects = {};
     }
 
+    radians(deg){
+        return deg * Math.PI/180
+    }
+
     get_verts() {
         const scale = this.attributes["scale"];
-        const s = Math.sin(this.absRotation);
-        const c = Math.cos(this.absRotation);
+        const rotRad = this.radians(this.absRotationDeg);
+        const s = Math.sin(rotRad);
+        const c = Math.cos(rotRad);
 
         const localVerts = [
             { x: 0, y: -10 * scale * 2 },
@@ -317,16 +326,19 @@ socket.on('connect', () => {
     console.log('Connected to server');
     const playerName = userData.username || 'Guest_' + Math.floor(Math.random() * 1000);
 
+    // Update player ID with socket ID after connection
+    game.player.id = socket.id;
+
     socket.emit('player_join', {
         x: game.player.absX,
         y: game.player.absY,
-        rotation: game.player.absRotation,
+        rotation: game.player.absRotationDeg,
         name: playerName,
         health: game.player.health,
         action: game.player.action,
         scale: game.player.attributes.scale
     });
-    console.log(`Joined game as ${playerName}`);
+    console.log(`Joined game as ${playerName} with ID ${socket.id}`);
 });
 
 socket.on('players_update', (players) => {
@@ -365,6 +377,7 @@ socket.on('players_update', (players) => {
 });
 
 socket.on('projectile_fired', (data) => {
+    console.log('Received projectile from another player:', data);
     const projectile = new Projectile(
         data.x,
         data.y,
@@ -376,15 +389,19 @@ socket.on('projectile_fired', (data) => {
     projectiles.push(projectile);
 });
 
-socket.on('player_hit', (data) => {
-    if (data.playerId === socket.id) {
-        game.player.takeDamage(data.damage);
-    }
-});
-
 socket.on('disconnect', () => {
     console.log('Disconnected from server');
 });
+
+socket.on('player_health_update', (data) => {
+    console.log("Player "+data.playerId+" dammaged, now has "+data.health+" left")
+    let player = otherPlayers.get(data.playerId)
+    max_health = player.attributes.max_health
+    player.health = data.health
+    player.attributes.max_health = max_health
+    otherPlayers.set(data.playerId,player)  
+    requestAnimationFrame(game.frame);
+})
 
 class artist {
     constructor(context, canvas, image) {
@@ -403,14 +420,12 @@ class artist {
             0,
             'idle',
             100,
-            'local',
+            socket.id || 'local', // Use socket.id when available
             playerName,
             1
         );
 
-        this.camera = {
-            rotation: 0
-        };
+        this.cameraDeg = 0; // Camera rotation in degrees
 
         this.backgroundImg.onload = () => {
             this.loaded = true;
@@ -424,7 +439,7 @@ class artist {
         this.context.save();
 
         this.context.translate(this.canvas.width / 2, this.canvas.height / 2);
-        this.context.rotate(this.camera.rotation);
+        this.context.rotate(this.player.radians(this.cameraDeg)); // Convert to radians here
 
         const diagonal = Math.sqrt(
             this.canvas.width * this.canvas.width +
@@ -457,13 +472,13 @@ class artist {
         this.context.restore();
     }
 
-    draw_triangle(x, y, rotation, color = 'blue', scale = 0) {
+    draw_triangle(x, y, rotationDeg, color = 'blue', scale = 0) {
         this.context.save();
         if (scale == 0) {
             scale = this.player.attributes.scale;
         }
         this.context.translate(x, y);
-        this.context.rotate(rotation);
+        this.context.rotate(this.player.radians(rotationDeg)); // Convert to radians here
 
         this.context.beginPath();
         this.context.moveTo(0, -(10 * scale * 2));
@@ -481,13 +496,14 @@ class artist {
     }
 
     draw_projectile(projectile) {
-        const screenPos = this.worldToScreen(projectile.absX, projectile.absY, projectile.rotation);
+        const screenPos = this.worldToScreen(projectile.absX, projectile.absY, projectile.rotationDeg);
 
         this.context.save();
 
         const projectileLength = 20;
-        const deltaX = projectileLength * Math.cos(screenPos.rotation);
-        const deltaY = projectileLength * Math.sin(screenPos.rotation);
+        const rotRad = this.player.radians(screenPos.rotation); // Convert to radians here
+        const deltaX = projectileLength * Math.cos(rotRad);
+        const deltaY = projectileLength * Math.sin(rotRad);
 
         this.context.beginPath();
         this.context.moveTo(screenPos.x, screenPos.y);
@@ -500,19 +516,20 @@ class artist {
         this.context.restore();
     }
 
-    worldToScreen(worldX, worldY, worldRotation) {
+    worldToScreen(worldX, worldY, worldRotationDeg) {
         const relX = worldX - this.player.absX;
         const relY = worldY - this.player.absY;
 
-        const cosRot = Math.cos(this.camera.rotation);
-        const sinRot = Math.sin(this.camera.rotation);
+        const camRad = this.player.radians(this.cameraDeg);
+        const cosRot = Math.cos(camRad);
+        const sinRot = Math.sin(camRad);
         const rotatedX = relX * cosRot - relY * sinRot;
         const rotatedY = relX * sinRot + relY * cosRot;
 
         const screenX = this.canvas.width / 2 + rotatedX;
         const screenY = this.canvas.height / 2 + rotatedY;
 
-        const screenRotation = worldRotation + this.camera.rotation;
+        const screenRotation = worldRotationDeg + this.cameraDeg;
 
         return { x: screenX, y: screenY, rotation: screenRotation };
     }
@@ -522,29 +539,41 @@ class artist {
         const scale = this.player.attributes.scale;
         const tipDistance = 10 * scale * 2; // Distance to tip
 
+        // Convert to radians for trig
+        const rotRad = this.player.radians(this.player.absRotationDeg);
+        
         // Spawn projectile at the tip of the triangle
-        const projectileX = this.player.absX + Math.sin(this.player.absRotation) * tipDistance;
-        const projectileY = this.player.absY - Math.cos(this.player.absRotation) * tipDistance;
-        console.log(angle);
+        const projectileX = this.player.absX + Math.sin(rotRad) * tipDistance;
+        const projectileY = this.player.absY - Math.cos(rotRad) * tipDistance;
 
         const projectile = new Projectile(
             projectileX,
             projectileY,
-            this.player.absRotation + angle,
+            this.player.absRotationDeg + angle, // Store in degrees
             10,
             this.player.attributes.shoot_strength,
             socket.id
         );
+
+        // Add projectile to local array so it renders
         projectiles.push(projectile);
 
+        console.log('Shooting projectile locally:', projectile);
         socket.emit('projectile_fired', {
             x: projectile.absX,
             y: projectile.absY,
-            rotation: projectile.rotation,
+            rotation: projectile.rotationDeg,
             speed: 10,
             damage: this.player.attributes.shoot_strength,
             ownerId: socket.id
         });
+        console.log('Emitted projectile_fired to server');
+    }
+
+    clamp_rotation(rotationDeg){
+        rotationDeg = rotationDeg % 360;
+        if (rotationDeg < 0) rotationDeg += 360;
+        return rotationDeg;
     }
 
     update() {
@@ -552,11 +581,14 @@ class artist {
         const rotateSpeed = this.player.attributes["rotate_speed"];
 
         if (pressedKeys['q'] || pressedKeys['Q']) {
-            this.camera.rotation += rotateSpeed;
+            this.cameraDeg += rotateSpeed;
         }
         if (pressedKeys['e'] || pressedKeys['E']) {
-            this.camera.rotation -= rotateSpeed;
+            this.cameraDeg -= rotateSpeed;
         }
+        
+        this.cameraDeg = this.clamp_rotation(this.cameraDeg);
+        this.player.absRotationDeg = this.clamp_rotation(-this.cameraDeg);
 
         // Shoot projectile with spacebar
         if (pressedKeys[' '] && !this.lastSpacePress) {
@@ -573,33 +605,25 @@ class artist {
 
             let projectileHit = false;
 
-            // Check collision with local player
-            if (projectiles[i].checkPlayerCollision(this.player)) {
+            // Check collision with local player (only if not owner)
+            if (projectiles[i].ownerId !== socket.id && 
+                projectiles[i].ownerId !== this.player.id && 
+                projectiles[i].checkPlayerCollision(this.player)) {
+                console.log("Local player hit by projectile!");
+                
+                // Apply damage locally for instant feedback
+                const oldHealth = this.player.health;
                 this.player.takeDamage(projectiles[i].damage);
-                // Emit hit to server
-                socket.emit('player_hit', {
+                
+                // Emit to server that we got hit
+                socket.emit('health_update', {
                     playerId: socket.id,
-                    damage: projectiles[i].damage,
-                    shooterId: projectiles[i].ownerId
+                    health: this.player.health
                 });
+                
                 projectileHit = true;
             }
-
-            // Check collision with other players
-            if (!projectileHit) {
-                otherPlayers.forEach(player => {
-                    if (projectiles[i].checkPlayerCollision(player)) {
-                        // Emit hit to server
-                        socket.emit('player_hit', {
-                            playerId: player.id,
-                            damage: projectiles[i].damage,
-                            shooterId: projectiles[i].ownerId
-                        });
-                        projectileHit = true;
-                    }
-                });
-            }
-
+            
             // Remove projectile if it hit something or expired
             if (projectileHit || projectiles[i].isExpired()) {
                 projectiles.splice(i, 1);
@@ -609,21 +633,23 @@ class artist {
         let dx = 0;
         let dy = 0;
 
+        const playerRotRad = this.player.radians(this.player.absRotationDeg);
+
         if (pressedKeys['w'] || pressedKeys['W'] || pressedKeys['ArrowUp']) {
-            dx += Math.sin(this.player.absRotation) * moveSpeed;
-            dy -= Math.cos(this.player.absRotation) * moveSpeed;
+            dx += Math.sin(playerRotRad) * moveSpeed;
+            dy -= Math.cos(playerRotRad) * moveSpeed;
         }
         if (pressedKeys['s'] || pressedKeys['S'] || pressedKeys['ArrowDown']) {
-            dx -= Math.sin(this.player.absRotation) * moveSpeed;
-            dy += Math.cos(this.player.absRotation) * moveSpeed;
+            dx -= Math.sin(playerRotRad) * moveSpeed;
+            dy += Math.cos(playerRotRad) * moveSpeed;
         }
         if (pressedKeys['a'] || pressedKeys['A'] || pressedKeys['ArrowLeft']) {
-            dx -= Math.cos(this.player.absRotation) * moveSpeed;
-            dy -= Math.sin(this.player.absRotation) * moveSpeed;
+            dx -= Math.cos(playerRotRad) * moveSpeed;
+            dy -= Math.sin(playerRotRad) * moveSpeed;
         }
         if (pressedKeys['d'] || pressedKeys['D'] || pressedKeys['ArrowRight']) {
-            dx += Math.cos(this.player.absRotation) * moveSpeed;
-            dy += Math.sin(this.player.absRotation) * moveSpeed;
+            dx += Math.cos(playerRotRad) * moveSpeed;
+            dy += Math.sin(playerRotRad) * moveSpeed;
         }
 
         const originalX = this.player.absX;
@@ -631,7 +657,6 @@ class artist {
 
         this.player.absX += dx;
         this.player.absY += dy;
-        this.player.absRotation = -this.camera.rotation;
 
         this.player.clamp_to_borders();
 
@@ -672,14 +697,14 @@ class artist {
         socket.emit('player_move', {
             x: this.player.absX,
             y: this.player.absY,
-            rotation: this.player.absRotation,
+            rotation: this.player.absRotationDeg,
             health: this.player.health,
             action: this.player.action,
             scale: this.player.attributes.scale
         });
     }
 
-    drawHealthBar(x, y, rotation, health, maxHealth, scale) {
+    drawHealthBar(x, y, rotationDeg, health, maxHealth, scale, isLocalPlayer = false) {
         this.context.save();
 
         const barWidth = 40 * scale;
@@ -691,7 +716,12 @@ class artist {
         const offsetY = 25 * scale;
 
         this.context.translate(x, y + offsetY);
-        this.context.rotate(rotation);
+        
+        // Only rotate for local player's health bar
+        // For other players, keep health bar upright (don't rotate)
+        if (isLocalPlayer) {
+            this.context.rotate(this.player.radians(rotationDeg));
+        }
 
         // Draw gray background (empty health)
         this.context.fillStyle = 'gray';
@@ -702,7 +732,6 @@ class artist {
         this.context.fillRect(-barWidth / 2, 0, filledWidth, barHeight);
 
         // Draw percentage text below bar
-        this.context.rotate(-rotation); // Unrotate for text
         this.context.fillStyle = 'white';
         this.context.strokeStyle = 'black';
         this.context.lineWidth = 2;
@@ -720,7 +749,7 @@ class artist {
             const screenPos = this.worldToScreen(
                 player.absX,
                 player.absY,
-                player.absRotation
+                player.absRotationDeg
             );
 
             this.draw_triangle(
@@ -741,15 +770,16 @@ class artist {
             this.context.strokeText(player.name, screenPos.x, screenPos.y - 30);
             this.context.fillText(player.name, screenPos.x, screenPos.y - 30);
             this.context.restore();
-
-            // Draw health bar
+            
+            console.log(player.health+" : "+ player.attributes.max_health)
             this.drawHealthBar(
                 screenPos.x,
                 screenPos.y,
                 screenPos.rotation,
                 player.health,
                 player.attributes.max_health,
-                player.attributes.scale
+                player.attributes.scale,
+                false
             );
         });
     }
@@ -763,8 +793,10 @@ class artist {
     frame = () => {
         this.update();
 
-        if (this.player.health < 0) {
+        if (this.player.health <= 0) {
+            socket.emit('disconnect') // change to kill
             window.location.href = "https://www.youtube.com/results?search_query=how+to+aim";
+            this.player.health = -1
         }
 
         this.context.clearRect(0, 0, this.canvas.width, this.canvas.height);
@@ -780,7 +812,8 @@ class artist {
             0,
             this.player.health,
             this.player.attributes.max_health,
-            this.player.attributes.scale
+            this.player.attributes.scale,
+            true
         );
 
         this.drawOtherPlayers();

@@ -13,17 +13,22 @@ from flask_socketio import SocketIO, emit
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import timedelta
+import eventlet
+
+
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', secrets.token_hex(32))
 app.config['REMEMBER_COOKIE_DURATION'] = timedelta(days=28)
 
 # CRITICAL: Configure SocketIO properly for production
+logger = False
+
 socketio = SocketIO(app, 
                     cors_allowed_origins="*",
-                    async_mode='eventlet',
-                    logger=True,
-                    engineio_logger=True,
+                    async_mode="eventlet",
+                    logger=logger,
+                    engineio_logger=logger,
                     ping_timeout=60,
                     ping_interval=25)
 
@@ -112,6 +117,37 @@ def logout():
     return redirect(url_for('index'))
 
 # SocketIO Events
+@socketio.on('projectile_fired')
+def handle_projectile_fired(data):
+    player_id = request.sid
+    print(f'Projectile fired by {player_id}: {data}')
+    
+    # Broadcast to all OTHER clients (not the sender)
+    emit('projectile_fired', {
+        'x': data['x'],
+        'y': data['y'],
+        'rotation': data['rotation'],
+        'speed': data['speed'],
+        'damage': data['damage'],
+        'ownerId': player_id  # Ensure ownerId is set to the shooter's ID
+    }, broadcast=True, include_self=False)
+
+@socketio.on('health_update')
+def handle_health_update(data):
+    player_id = request.sid
+    print(f'Health update from {player_id}: {data}')
+    
+    # Update player's health in the players dict
+    if player_id in players:
+        players[player_id]['health'] = data['health']
+    
+    # Broadcast to all clients
+    emit('player_health_update', {
+        'playerId': player_id,
+        'health': data['health']
+    }, broadcast=True, include_self=False)
+
+
 @socketio.on('connect')
 def handle_connect():
     print(f'Client connected: {request.sid}')
@@ -141,10 +177,13 @@ def handle_move(data):
         players[player_id].update({
             'x': data['x'],
             'y': data['y'],
-            'rotation': data['rotation']
+            'rotation': data['rotation'],
+            'health': data['health'],
+            'action': data.get('action', 'idle'),
+            'scale': data.get('scale', 1)
         })
-        emit('players_update', players, broadcast=True)
-
+        emit('players_update', players, broadcast=True, include_self=False)
+        
 @socketio.on('disconnect')
 def handle_disconnect():
     player_id = request.sid
