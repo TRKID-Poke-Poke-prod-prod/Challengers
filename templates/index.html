@@ -7,6 +7,184 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='css/header.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/game.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/auth.css') }}">
+    <style>
+        /* Mobile Controls Styles */
+        #mobile-controls {
+            display: none;
+            position: fixed;
+            inset: 0;
+            pointer-events: none;
+            z-index: 1000;
+        }
+
+        #mobile-controls > * {
+            pointer-events: auto;
+        }
+
+        /* Joystick Container */
+        #joystick-container {
+            position: fixed;
+            bottom: 40px;
+            left: 40px;
+            width: 140px;
+            height: 140px;
+        }
+
+        #joystick {
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(135deg, rgba(0, 255, 255, 0.1), rgba(138, 43, 226, 0.1));
+            border: 2px solid rgba(0, 255, 255, 0.5);
+            border-radius: 50%;
+            position: relative;
+            box-shadow: 
+                0 0 20px rgba(0, 255, 255, 0.3),
+                inset 0 0 20px rgba(0, 255, 255, 0.1),
+                0 0 40px rgba(138, 43, 226, 0.2);
+            backdrop-filter: blur(10px);
+            transition: all 0.3s ease;
+        }
+
+        #joystick::before {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 50px;
+            height: 50px;
+            background: linear-gradient(135deg, rgba(0, 255, 255, 0.3), rgba(138, 43, 226, 0.3));
+            border: 2px solid rgba(0, 255, 255, 0.8);
+            border-radius: 50%;
+            box-shadow: 0 0 15px rgba(0, 255, 255, 0.6);
+        }
+
+        #joystick.active {
+            box-shadow: 
+                0 0 30px rgba(0, 255, 255, 0.5),
+                inset 0 0 30px rgba(0, 255, 255, 0.2),
+                0 0 60px rgba(138, 43, 226, 0.4);
+        }
+
+        /* Action Buttons */
+        .action-buttons {
+            position: fixed;
+            bottom: 40px;
+            right: 40px;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        .holo-button {
+            width: 70px;
+            height: 70px;
+            background: linear-gradient(135deg, rgba(0, 255, 255, 0.15), rgba(138, 43, 226, 0.15));
+            border: 2px solid rgba(0, 255, 255, 0.6);
+            border-radius: 50%;
+            position: relative;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            backdrop-filter: blur(10px);
+            box-shadow: 
+                0 0 20px rgba(0, 255, 255, 0.4),
+                inset 0 0 15px rgba(0, 255, 255, 0.1);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: 'Orbitron', 'Arial', sans-serif;
+            font-weight: bold;
+            font-size: 14px;
+            color: rgba(0, 255, 255, 0.9);
+            text-shadow: 0 0 10px rgba(0, 255, 255, 0.8);
+            user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .holo-button::before {
+            content: '';
+            position: absolute;
+            inset: -5px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, rgba(0, 255, 255, 0.3), transparent);
+            opacity: 0;
+            transition: opacity 0.2s ease;
+            pointer-events: none;
+        }
+
+        .holo-button:active {
+            transform: scale(0.95);
+            box-shadow: 
+                0 0 30px rgba(0, 255, 255, 0.7),
+                inset 0 0 25px rgba(0, 255, 255, 0.3);
+            border-color: rgba(0, 255, 255, 1);
+        }
+
+        .holo-button:active::before {
+            opacity: 1;
+        }
+
+        .holo-button.pressed {
+            background: linear-gradient(135deg, rgba(0, 255, 255, 0.3), rgba(138, 43, 226, 0.3));
+            box-shadow: 
+                0 0 35px rgba(0, 255, 255, 0.8),
+                inset 0 0 30px rgba(0, 255, 255, 0.4);
+        }
+
+        /* Holographic scan line effect */
+        .holo-button::after {
+            content: '';
+            position: absolute;
+            inset: 0;
+            border-radius: 50%;
+            background: linear-gradient(
+                to bottom,
+                transparent 0%,
+                rgba(0, 255, 255, 0.2) 50%,
+                transparent 100%
+            );
+            animation: scan 2s linear infinite;
+            pointer-events: none;
+        }
+
+        @keyframes scan {
+            0% { transform: translateY(-100%); }
+            100% { transform: translateY(100%); }
+        }
+
+        /* Show controls only on mobile */
+        @media (max-width: 768px), (hover: none) {
+            #mobile-controls {
+                display: block;
+            }
+        }
+
+        @media (max-width: 480px) {
+            #joystick-container {
+                width: 120px;
+                height: 120px;
+                bottom: 30px;
+                left: 30px;
+            }
+
+            #joystick::before {
+                width: 40px;
+                height: 40px;
+            }
+
+            .action-buttons {
+                bottom: 30px;
+                right: 30px;
+                gap: 15px;
+            }
+
+            .holo-button {
+                width: 60px;
+                height: 60px;
+                font-size: 12px;
+            }
+        }
+    </style>
 </head>
 <body>
     <header id="header">
@@ -29,7 +207,8 @@
             <div id="guest-overlay">
                 <div class="guest-panel">
                     <h2>Welcome to Challenger!</h2>
-                    <p>Enter a name to play as a guest, or login for a full account</p>
+                    <p id="overlay-message">Enter a name to play, or click Return to continue with saved player</p>
+                    <p>Login will be remembered for 30 days.</p>
                     
                     <div class="input-group">
                         <label for="guest-name">Your Name</label>
@@ -37,33 +216,145 @@
                     </div>
                     
                     <div class="button-group">
-                        <button id="play-guest-btn" class="btn btn-primary">Play as Guest</button>
-                        <a href="{{ url_for('login') }}" class="btn btn-secondary">Login</a>
+                        <button id="play-guest-btn" class="btn btn-primary">Commence</button>
+                        <button id='return' class="btn btn-secondary">Return</button>
                     </div>
                 </div>
             </div>
             {% endif %}
             <canvas id="challenger" width="800" height="450"></canvas>
+            
+            <!-- Mobile Controls -->
+            <div id="mobile-controls">
+                <div id="joystick-container">
+                    <div id="joystick"></div>
+                </div>
+                
+                <div class="action-buttons">
+                    <button id="btn-jump" class="holo-button">JUMP</button>
+                    <button id="btn-action" class="holo-button">ACT</button>
+                </div>
+            </div>
         </div>
         <div class="spacer"></div>
     </main>
     
     <script>
-        // Pass user data to JavaScript
-        const userData = {
+        // Global player data - MUST be set before game starts
+        let playerData = {
             isAuthenticated: {{ 'true' if current_user.is_authenticated else 'false' }},
-            username: {{ ('"%s"' % current_user.username) if current_user.is_authenticated else 'null' }}
+            username: {{ ('"%s"' % current_user.username) if current_user.is_authenticated else 'null' }},
+            playerId: null,
+            playerInfo: null,
+            gameStarted: false
         };
         
-        // Handle guest play
+        // Prevent game scripts from running until player is ready
+        window.playerReady = false;
+        
         {% if not current_user.is_authenticated %}
-        document.getElementById('play-guest-btn').addEventListener('click', function() {
+        // Check for existing player on load
+        async function checkExistingPlayer() {
+            try {
+                const response = await fetch('/api/get-player');
+                if (response.ok) {
+                    const data = await response.json();
+                    playerData.playerId = data.player_id;
+                    playerData.playerInfo = data.player_data;
+                    document.getElementById('overlay-message').textContent = 
+                        `Welcome back, ${data.player_data.name}! Click Return to continue or create a new player.`;
+                    return true;
+                }
+            } catch (error) {
+                console.log('No existing player found');
+            }
+            return false;
+        }
+        
+        // Initialize on page load
+        checkExistingPlayer();
+        
+        // Handle new player creation (Commence button)
+        document.getElementById('play-guest-btn').addEventListener('click', async function() {
             const guestName = document.getElementById('guest-name').value.trim();
-            if (guestName) {
-                userData.username = guestName;
-                document.getElementById('guest-overlay').classList.add('hidden');
-            } else {
+            
+            if (!guestName) {
                 alert('Please enter your name to continue');
+                return;
+            }
+            
+            if (guestName.toLowerCase() === 'none') {
+                alert('Please do not use "none" as a name!');
+                return;
+            }
+            
+            try {
+                const response = await fetch('/api/create-player', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ name: guestName })
+                });
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    playerData.playerId = data.player_id;
+                    playerData.playerInfo = data.player_data;
+                    playerData.username = data.player_data.name;
+                    
+                    // Update window.playerData
+                    window.playerData = playerData;
+                    
+                    // Hide overlay and start game
+                    document.getElementById('guest-overlay').classList.add('hidden');
+                    window.playerReady = true;
+                    playerData.gameStarted = true;
+                    
+                    // Trigger game start event
+                    window.dispatchEvent(new CustomEvent('playerReady', { detail: playerData }));
+                } else {
+                    const error = await response.json();
+                    alert(error.error || 'Failed to create player');
+                }
+            } catch (error) {
+                console.error('Error creating player:', error);
+                alert('Failed to create player. Please try again.');
+            }
+        });
+        
+        // Handle returning player (Return button)
+        document.getElementById('return').addEventListener('click', async function() {
+            if (!playerData.playerId) {
+                alert('No saved player found. Please enter a name to create a new player.');
+                return;
+            }
+            
+            try {
+                // Refresh player data
+                const response = await fetch('/api/get-player');
+                if (response.ok) {
+                    const data = await response.json();
+                    playerData.playerId = data.player_id;
+                    playerData.playerInfo = data.player_data;
+                    playerData.username = data.player_data.name;
+                    
+                    // Update window.playerData
+                    window.playerData = playerData;
+                    
+                    // Hide overlay and start game
+                    document.getElementById('guest-overlay').classList.add('hidden');
+                    window.playerReady = true;
+                    playerData.gameStarted = true;
+                    
+                    // Trigger game start event
+                    window.dispatchEvent(new CustomEvent('playerReady', { detail: playerData }));
+                } else {
+                    alert('Failed to load saved player. Please create a new player.');
+                }
+            } catch (error) {
+                console.error('Error loading player:', error);
+                alert('Failed to load saved player. Please try again.');
             }
         });
         
@@ -73,9 +364,14 @@
                 document.getElementById('play-guest-btn').click();
             }
         });
+        {% else %}
+        // Authenticated users can start immediately
+        window.playerReady = true;
+        playerData.gameStarted = true;
         {% endif %}
     </script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <script src="{{ url_for('static', filename='js/inputs.js') }}"></script>
     <script src="{{ url_for('static', filename='js/game.js') }}"></script>
 </body>
 </html>

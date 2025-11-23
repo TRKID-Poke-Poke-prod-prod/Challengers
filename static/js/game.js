@@ -1,864 +1,920 @@
-// Complete fixed code - everything uses degrees, converts to radians only when needed
+function startGame() {
+    const canvas = document.getElementById("challenger");
+    const socket = io();
 
-const canvas = document.getElementById("challenger");
-const socket = io();
+    const map_width = 8500
+    const map_height = 4781
 
-const map_width = 8500
-const map_height = 4781
+    const player = window.playerData
 
-let display_projectile = false
-let show_coords = false
-let angle = -90
+    let display_projectile = false
+    let show_coords = false
+    let angle = -90
 
-let playerName = userData.username || 'Guest_' + Math.floor(Math.random() * 1000);
+    let playerName = player.username
 
-// Add projectiles array
-const projectiles = [];
+    // Add projectiles array
+    const projectiles = [];
 
-class Vector2D {
-    constructor(x, y) {
-        this.x = x;
-        this.y = y;
-    }
-
-    magnitude() {
-        return Math.sqrt(this.x * this.x + this.y * this.y);
-    }
-}
-
-const otherPlayers = new Map();
-
-// Projectile class for straight-line projectiles
-class Projectile {
-    constructor(absX, absY, rotationDeg, speed = 10, damage = 10, ownerId = null) {
-        this.absX = absX;
-        this.absY = absY;
-        this.rotationDeg = rotationDeg; // Store in degrees
-        this.speed = speed;
-        this.damage = damage;
-        this.ownerId = ownerId;
-        this.radius = 5; // collision radius
-    }
-
-    update() {
-        // Convert to radians for math
-        const rotationRad = this.rotationDeg * Math.PI / 180;
-        // Move projectile in straight line
-        this.absX += Math.cos(rotationRad) * this.speed;
-        this.absY += Math.sin(rotationRad) * this.speed;
-    }
-
-    isExpired() {
-        // Remove if out of bounds
-        return this.absX < 0 || this.absX > map_width ||
-            this.absY < 0 || this.absY > map_height;
-    }
-
-    // Check collision with a player (circle vs triangle)
-    checkPlayerCollision(player) {
-        // Don't collide with owner
-        if (this.ownerId === player.id) {
-            return false;
+    class Vector2D {
+        constructor(x, y) {
+            this.x = x;
+            this.y = y;
         }
 
-        player.get_verts();
+        magnitude() {
+            return Math.sqrt(this.x * this.x + this.y * this.y);
+        }
+    }
 
-        // Simple circle-triangle collision
-        // Check if projectile center is inside triangle or close to any edge
-        const verts = player.verts;
+    const otherPlayers = new Map();
 
-        // Point in triangle test
-        function sign(p1, p2, p3) {
-            return (p1.x - p3.x) * (p2.y - p3.y) - (p2.x - p3.x) * (p1.y - p3.y);
+    // Projectile class for straight-line projectiles
+    class Projectile {
+        constructor(absX, absY, rotationDeg, speed = 10, damage = 10, ownerId = null) {
+            this.absX = absX;
+            this.absY = absY;
+            this.rotationDeg = rotationDeg; // Store in degrees
+            this.speed = speed;
+            this.damage = damage;
+            this.ownerId = ownerId;
+            this.radius = 5; // collision radius
         }
 
-        const d1 = sign({ x: this.absX, y: this.absY }, verts[0], verts[1]);
-        const d2 = sign({ x: this.absX, y: this.absY }, verts[1], verts[2]);
-        const d3 = sign({ x: this.absX, y: this.absY }, verts[2], verts[0]);
-
-        const hasNeg = (d1 < 0) || (d2 < 0) || (d3 < 0);
-        const hasPos = (d1 > 0) || (d2 > 0) || (d3 > 0);
-
-        const isInside = !(hasNeg && hasPos);
-
-        if (isInside) return true;
-
-        // Check distance to edges
-        for (let i = 0; i < verts.length; i++) {
-            const v1 = verts[i];
-            const v2 = verts[(i + 1) % verts.length];
-
-            // Distance from point to line segment
-            const dx = v2.x - v1.x;
-            const dy = v2.y - v1.y;
-            const lengthSquared = dx * dx + dy * dy;
-
-            let t = ((this.absX - v1.x) * dx + (this.absY - v1.y) * dy) / lengthSquared;
-            t = Math.max(0, Math.min(1, t));
-
-            const closestX = v1.x + t * dx;
-            const closestY = v1.y + t * dy;
-
-            const distX = this.absX - closestX;
-            const distY = this.absY - closestY;
-            const distance = Math.sqrt(distX * distX + distY * distY);
-
-            if (distance <= this.radius) {
-                return true;
-            }
+        update() {
+            // Convert to radians for math
+            const rotationRad = this.rotationDeg * Math.PI / 180;
+            // Move projectile in straight line
+            this.absX += Math.cos(rotationRad) * this.speed;
+            this.absY += Math.sin(rotationRad) * this.speed;
         }
 
-        return false;
-    }
-}
-
-// Player class with absolute coordinates
-class Player {
-    constructor(absX, absY, absRotationDeg = 0, action, health, id, name, scale = 1, max_health=100) {
-        this.absX = absX;
-        this.absY = absY;
-        this.absRotationDeg = absRotationDeg; // Store in degrees
-        this.action = action;
-        this.health = health;
-        this.stamina = 100;
-        this.id = id;
-        this.name = name;
-        this.verts = [];
-        this.lastCollisionNormal = null;
-        this.lastCollisionDepth = 0;
-        this.attributes = {
-            scale: scale,
-            rotate_speed: 3, // degrees per frame
-            max_health: max_health,
-            speed: 3,
-            mana_regen: 2,
-            regen: 1,
-            stamina_regen: 1,
-            shoot_strength: 10 // Projectile damage
-        };
-        this.effects = {};
-    }
-
-    radians(deg){
-        return deg * Math.PI/180
-    }
-
-    get_verts() {
-        const scale = this.attributes["scale"];
-        const rotRad = this.radians(this.absRotationDeg);
-        const s = Math.sin(rotRad);
-        const c = Math.cos(rotRad);
-
-        const localVerts = [
-            { x: 0, y: -10 * scale * 2 },
-            { x: 10 * scale, y: 10 * scale },
-            { x: -10 * scale, y: 10 * scale }
-        ];
-
-        this.verts = localVerts.map(v => ({
-            x: this.absX + (v.x * c - v.y * s),
-            y: this.absY + (v.x * s + v.y * c)
-        }));
-
-        return this.verts;
-    }
-
-    getAxes() {
-        const axes = [];
-        const verts = this.verts.length > 0 ? this.verts : this.get_verts();
-
-        for (let i = 0; i < verts.length; i++) {
-            const v1 = verts[i];
-            const v2 = verts[(i + 1) % verts.length];
-
-            const edge = {
-                x: v2.x - v1.x,
-                y: v2.y - v1.y
-            };
-
-            const normal = {
-                x: -edge.y,
-                y: edge.x
-            };
-
-            const length = Math.sqrt(normal.x * normal.x + normal.y * normal.y);
-            axes.push({
-                x: normal.x / length,
-                y: normal.y / length
-            });
+        isExpired() {
+            // Remove if out of bounds
+            return this.absX < 0 || this.absX > map_width ||
+                this.absY < 0 || this.absY > map_height;
         }
 
-        return axes;
-    }
-
-    projectOntoAxis(axis) {
-        const verts = this.verts.length > 0 ? this.verts : this.get_verts();
-
-        let min = verts[0].x * axis.x + verts[0].y * axis.y;
-        let max = min;
-
-        for (let i = 1; i < verts.length; i++) {
-            const projection = verts[i].x * axis.x + verts[i].y * axis.y;
-            if (projection < min) min = projection;
-            if (projection > max) max = projection;
-        }
-
-        return { min, max };
-    }
-
-    SAT(enemy) {
-        this.get_verts();
-        enemy.get_verts();
-
-        const axes = [...this.getAxes(), ...enemy.getAxes()];
-
-        let minOverlap = Infinity;
-        let smallestAxis = null;
-
-        for (const axis of axes) {
-            const proj1 = this.projectOntoAxis(axis);
-            const proj2 = enemy.projectOntoAxis(axis);
-
-            if (proj1.max < proj2.min || proj2.max < proj1.min) {
+        // Check collision with a player (circle vs triangle)
+        checkPlayerCollision(player) {
+            // Don't collide with owner
+            if (this.ownerId === player.id) {
                 return false;
             }
 
-            const overlap = Math.min(proj1.max, proj2.max) - Math.max(proj1.min, proj2.min);
+            player.get_verts();
 
-            if (overlap < minOverlap) {
-                minOverlap = overlap;
-                smallestAxis = axis;
+            // Simple circle-triangle collision
+            // Check if projectile center is inside triangle or close to any edge
+            const verts = player.verts;
+
+            // Point in triangle test
+            function sign(p1, p2, p3) {
+                return (p1.x - p3.x) * (p2.y - p3.y) - (p2.x - p3.x) * (p1.y - p3.y);
             }
+
+            const d1 = sign({ x: this.absX, y: this.absY }, verts[0], verts[1]);
+            const d2 = sign({ x: this.absX, y: this.absY }, verts[1], verts[2]);
+            const d3 = sign({ x: this.absX, y: this.absY }, verts[2], verts[0]);
+
+            const hasNeg = (d1 < 0) || (d2 < 0) || (d3 < 0);
+            const hasPos = (d1 > 0) || (d2 > 0) || (d3 > 0);
+
+            const isInside = !(hasNeg && hasPos);
+
+            if (isInside) return true;
+
+            // Check distance to edges
+            for (let i = 0; i < verts.length; i++) {
+                const v1 = verts[i];
+                const v2 = verts[(i + 1) % verts.length];
+
+                // Distance from point to line segment
+                const dx = v2.x - v1.x;
+                const dy = v2.y - v1.y;
+                const lengthSquared = dx * dx + dy * dy;
+
+                let t = ((this.absX - v1.x) * dx + (this.absY - v1.y) * dy) / lengthSquared;
+                t = Math.max(0, Math.min(1, t));
+
+                const closestX = v1.x + t * dx;
+                const closestY = v1.y + t * dy;
+
+                const distX = this.absX - closestX;
+                const distY = this.absY - closestY;
+                const distance = Math.sqrt(distX * distX + distY * distY);
+
+                if (distance <= this.radius) {
+                    return true;
+                }
+            }
+
+            return false;
         }
-
-        this.lastCollisionNormal = smallestAxis;
-        this.lastCollisionDepth = minOverlap;
-
-        return true;
     }
 
-    getCollisionData(enemy) {
-        if (this.lastCollisionNormal && this.lastCollisionDepth > 0) {
-            const dx = this.absX - enemy.absX;
-            const dy = this.absY - enemy.absY;
-            const dot = dx * this.lastCollisionNormal.x + dy * this.lastCollisionNormal.y;
+    // Player class with absolute coordinates
+    class Player {
+        constructor(absX, absY, absRotationDeg = 0, action, health, id, name, scale = 1, max_health=100) {
+            this.absX = absX;
+            this.absY = absY;
+            this.absRotationDeg = absRotationDeg; // Store in degrees
+            this.action = action;
+            this.health = health;
+            this.stamina = 100;
+            this.id = id;
+            this.name = name;
+            this.verts = [];
+            this.lastCollisionNormal = null;
+            this.lastCollisionDepth = 0;
+            this.attributes = {
+                scale: scale,
+                rotate_speed: 3, // degrees per frame
+                max_health: max_health,
+                speed: 3,
+                mana_regen: 2,
+                regen: 1,
+                stamina_regen: 1,
+                shoot_strength: 10 // Projectile damage
+            };
+            this.effects = {};
+            this.damage = [];
+            this.kills = 0;
+            this.deaths = 0;
+            this.assists = 0;
+            this.secondary_assists = 0;
+            this.assistable_a = [];
+            this.assistable_b = [];
+        }
 
-            if (dot < 0) {
-                this.lastCollisionNormal = {
-                    x: -this.lastCollisionNormal.x,
-                    y: -this.lastCollisionNormal.y
+        radians(deg){
+            return deg * Math.PI/180
+        }
+
+        get_verts() {
+            const scale = this.attributes["scale"];
+            const rotRad = this.radians(this.absRotationDeg);
+            const s = Math.sin(rotRad);
+            const c = Math.cos(rotRad);
+
+            const localVerts = [
+                { x: 0, y: -10 * scale * 2 },
+                { x: 10 * scale, y: 10 * scale },
+                { x: -10 * scale, y: 10 * scale }
+            ];
+
+            this.verts = localVerts.map(v => ({
+                x: this.absX + (v.x * c - v.y * s),
+                y: this.absY + (v.x * s + v.y * c)
+            }));
+
+            return this.verts;
+        }
+
+        getAxes() {
+            const axes = [];
+            const verts = this.verts.length > 0 ? this.verts : this.get_verts();
+
+            for (let i = 0; i < verts.length; i++) {
+                const v1 = verts[i];
+                const v2 = verts[(i + 1) % verts.length];
+
+                const edge = {
+                    x: v2.x - v1.x,
+                    y: v2.y - v1.y
+                };
+
+                const normal = {
+                    x: -edge.y,
+                    y: edge.x
+                };
+
+                const length = Math.sqrt(normal.x * normal.x + normal.y * normal.y);
+                axes.push({
+                    x: normal.x / length,
+                    y: normal.y / length
+                });
+            }
+
+            return axes;
+        }
+
+        projectOntoAxis(axis) {
+            const verts = this.verts.length > 0 ? this.verts : this.get_verts();
+
+            let min = verts[0].x * axis.x + verts[0].y * axis.y;
+            let max = min;
+
+            for (let i = 1; i < verts.length; i++) {
+                const projection = verts[i].x * axis.x + verts[i].y * axis.y;
+                if (projection < min) min = projection;
+                if (projection > max) max = projection;
+            }
+
+            return { min, max };
+        }
+
+        SAT(enemy) {
+            this.get_verts();
+            enemy.get_verts();
+
+            const axes = [...this.getAxes(), ...enemy.getAxes()];
+
+            let minOverlap = Infinity;
+            let smallestAxis = null;
+
+            for (const axis of axes) {
+                const proj1 = this.projectOntoAxis(axis);
+                const proj2 = enemy.projectOntoAxis(axis);
+
+                if (proj1.max < proj2.min || proj2.max < proj1.min) {
+                    return false;
+                }
+
+                const overlap = Math.min(proj1.max, proj2.max) - Math.max(proj1.min, proj2.min);
+
+                if (overlap < minOverlap) {
+                    minOverlap = overlap;
+                    smallestAxis = axis;
+                }
+            }
+
+            this.lastCollisionNormal = smallestAxis;
+            this.lastCollisionDepth = minOverlap;
+
+            return true;
+        }
+
+        getCollisionData(enemy) {
+            if (this.lastCollisionNormal && this.lastCollisionDepth > 0) {
+                const dx = this.absX - enemy.absX;
+                const dy = this.absY - enemy.absY;
+                const dot = dx * this.lastCollisionNormal.x + dy * this.lastCollisionNormal.y;
+
+                if (dot < 0) {
+                    this.lastCollisionNormal = {
+                        x: -this.lastCollisionNormal.x,
+                        y: -this.lastCollisionNormal.y
+                    };
+                }
+
+                return {
+                    normal: this.lastCollisionNormal,
+                    depth: this.lastCollisionDepth
                 };
             }
-
-            return {
-                normal: this.lastCollisionNormal,
-                depth: this.lastCollisionDepth
-            };
+            return null;
         }
-        return null;
-    }
 
-    check_border_collision() {
-        this.get_verts();
+        check_border_collision() {
+            this.get_verts();
 
-        for (let vert of this.verts) {
-            if (vert.x > map_width || vert.x < 0) {
-                return true;
+            for (let vert of this.verts) {
+                if (vert.x > map_width || vert.x < 0) {
+                    return true;
+                }
+                if (vert.y > map_height || vert.y < 0) {
+                    return true;
+                }
             }
-            if (vert.y > map_height || vert.y < 0) {
-                return true;
-            }
-        }
 
-        return false;
-    }
-
-    clamp_to_borders() {
-        this.get_verts();
-
-        let minX = Infinity,
-            maxX = -Infinity;
-        let minY = Infinity,
-            maxY = -Infinity;
-
-        for (let vert of this.verts) {
-            minX = Math.min(minX, vert.x);
-            maxX = Math.max(maxX, vert.x);
-            minY = Math.min(minY, vert.y);
-            maxY = Math.max(maxY, vert.y);
-        }
-
-        if (minX < 0) {
-            this.absX += (0 - minX);
-        }
-        if (maxX > map_width) {
-            this.absX -= (maxX - map_width);
-        }
-        if (minY < 0) {
-            this.absY += (0 - minY);
-        }
-        if (maxY > map_height) {
-            this.absY -= (maxY - map_height);
-        }
-    }
-
-    check_player_collision(enemy) {
-        const dx = this.absX - enemy.absX;
-        const dy = this.absY - enemy.absY;
-        const distance = Math.sqrt(dx * dx + dy * dy);
-        const maxSize = (this.attributes.scale * 20) + (enemy.attributes.scale * 20);
-
-        if (distance > maxSize) {
             return false;
         }
 
-        return this.SAT(enemy);
-    }
+        clamp_to_borders() {
+            this.get_verts();
 
-    takeDamage(damage) {
-        this.health -= damage;
-        if (this.health < 0) this.health = 0;
-        console.log(`${this.name} took ${damage} damage. Health: ${this.health}`);
-    }
-}
+            let minX = Infinity,
+                maxX = -Infinity;
+            let minY = Infinity,
+                maxY = -Infinity;
 
-socket.on('connect', () => {
-    console.log('Connected to server');
-    const playerName = userData.username || 'Guest_' + Math.floor(Math.random() * 1000);
-
-    // Update player ID with socket ID after connection
-    game.player.id = socket.id;
-
-    socket.emit('player_join', {
-        x: game.player.absX,
-        y: game.player.absY,
-        rotation: game.player.absRotationDeg,
-        name: playerName,
-        health: game.player.health,
-        action: game.player.action,
-        scale: game.player.attributes.scale
-    });
-    console.log(`Joined game as ${playerName} with ID ${socket.id}`);
-});
-
-socket.on('players_update', (players) => {
-    const oldPlayersData = new Map(otherPlayers);
-    otherPlayers.clear();
-    const currentPlayerIds = new Set();
-
-    Object.entries(players).forEach(([id, data]) => {
-        if (id !== socket.id) {
-            currentPlayerIds.add(id);
-
-            if (!oldPlayersData.has(id)) {
-                console.log(`Player ${data.name} joined the game`);
+            for (let vert of this.verts) {
+                minX = Math.min(minX, vert.x);
+                maxX = Math.max(maxX, vert.x);
+                minY = Math.min(minY, vert.y);
+                maxY = Math.max(maxY, vert.y);
             }
 
-            const playerInstance = new Player(
-                data.x,
-                data.y,
-                data.rotation,
-                data.action || 'idle',
-                data.health || 100,
-                id,
-                data.name,
-                data.scale || 1
+            if (minX < 0) {
+                this.absX += (0 - minX);
+            }
+            if (maxX > map_width) {
+                this.absX -= (maxX - map_width);
+            }
+            if (minY < 0) {
+                this.absY += (0 - minY);
+            }
+            if (maxY > map_height) {
+                this.absY -= (maxY - map_height);
+            }
+        }
+
+        check_player_collision(enemy) {
+            const dx = this.absX - enemy.absX;
+            const dy = this.absY - enemy.absY;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+            const maxSize = (this.attributes.scale * 20) + (enemy.attributes.scale * 20);
+
+            if (distance > maxSize) {
+                return false;
+            }
+
+            return this.SAT(enemy);
+        }
+
+        takeDamage(damage, from="Environment") {
+            this.damage.push({amount: damage, from: from, time: Date.now()})
+            if (!from in this.assistable_a) this.assistable_a.push(from);
+            this.health -= damage;
+            if (this.health < 0) this.health = 0;
+            console.log(`${this.name} took ${damage} damage. Health: ${this.health}`);
+        }
+    }
+
+    socket.on('connect', () => {
+        console.log('Connected to server');
+        const playerName = player.username
+
+        // Update player ID with socket ID after connection
+        game.player.id = socket.id;
+
+        socket.emit('player_join', {
+            player_id: player.playerId,
+            x: game.player.absX,
+            y: game.player.absY,
+            rotation: game.player.absRotationDeg,
+            name: playerName,
+            health: game.player.health,
+            action: game.player.action,
+            scale: game.player.attributes.scale
+        });
+        console.log(`Joined game as ${playerName} with ID ${socket.id}`);
+    });
+
+    socket.on('players_update', (players) => {
+        console.log('Players update received:', players);
+        console.log('Number of players:', Object.keys(players).length);
+        const oldPlayers = new Set(otherPlayers.keys());
+        
+        // Clear old players
+        otherPlayers.clear();
+        
+        // Update player positions and track new players
+        Object.entries(players).forEach(([id, data]) => {
+            if (id !== socket.id) {
+                if (!oldPlayers.has(id)) {
+                    console.log(`Player ${data.name} joined the game`);
+                }
+                // Fix: Match Player constructor signature
+                otherPlayers.set(id, new Player(
+                    data.x,           // absX
+                    data.y,           // absY
+                    data.rotation,    // absRotationDeg
+                    data.action || 'idle',  // action
+                    data.health || 100,     // health
+                    id,               // id (socket id)
+                    data.name,        // name
+                    data.scale || 1   // scale
+                ));
+                oldPlayers.delete(id);
+            }
+        });
+
+        // Any remaining old players have disconnected
+        oldPlayers.forEach(id => {
+            console.log(`Player ${id} disconnected`);
+        });
+    });
+
+    socket.on('projectile_fired', (data) => {
+        console.log('Received projectile from another player:', data);
+        const projectile = new Projectile(
+            data.x,
+            data.y,
+            data.rotation,
+            data.speed,
+            data.damage,
+            data.ownerId
+        );
+        projectiles.push(projectile);
+    });
+
+    socket.on('disconnect', () => {
+        console.log('Disconnected from server');
+    });
+
+    socket.on('player_death', (data) => {
+        console.log("Player "+data.playerId+" died.")
+        otherPlayers.delete(data.playerId)
+        if (game.player.name in data.assistable_a){
+            game.player.assists += 1
+            console.log("You assisted in a kill! Total assists: "+game.player.assists)
+        } else if (game.player.name in data.assistable_b){
+            game.player.secondary_assists += 1
+            console.log("You got a secondary assist! Total secondary assists: "+game.player.secondary_assists)
+        } else if (data.killerId == game.player.name){
+            game.player.kills += 1
+            console.log("You got a kill! Total kills: "+game.player.kills)
+        }
+    })
+
+    socket.on('player_health_update', (data) => {
+        console.log("Player "+data.playerId+", now has "+data.health+" health.")
+        let player = otherPlayers.get(data.playerId)
+        max_health = player.attributes.max_health
+        player.health = data.health
+        player.attributes.max_health = max_health
+        otherPlayers.set(data.playerId,player)  
+        requestAnimationFrame(game.frame);
+    })
+
+    socket.on('error', function(data) {
+        console.error('Socket error:', data);
+        alert(data.message || 'Connection error occurred');
+    });
+
+    class artist {
+        constructor(context, canvas, image) {
+            this.context = context;
+            this.canvas = canvas;
+            this.backgroundImg = image;
+            this.loaded = false;
+            this.lastSpacePress = false;
+
+            const spawnRadius = Math.random() * 750;
+            const spawnAngle = Math.random() * (Math.PI / 2);
+
+            this.player = new Player(
+                spawnRadius * Math.cos(spawnAngle),
+                spawnRadius * Math.sin(spawnAngle),
+                0,
+                'idle',
+                100,
+                socket.id || 'local', // Use socket.id when available
+                playerName,
+                1
             );
 
-            otherPlayers.set(id, playerInstance);
-        }
-    });
+            this.cameraDeg = 0; // Camera rotation in degrees
 
-    oldPlayersData.forEach((playerData, id) => {
-        if (!currentPlayerIds.has(id)) {
-            console.log(`Player ${playerData.name} left the game`);
-        }
-    });
-});
-
-socket.on('projectile_fired', (data) => {
-    console.log('Received projectile from another player:', data);
-    const projectile = new Projectile(
-        data.x,
-        data.y,
-        data.rotation,
-        data.speed,
-        data.damage,
-        data.ownerId
-    );
-    projectiles.push(projectile);
-});
-
-socket.on('disconnect', () => {
-    console.log('Disconnected from server');
-});
-
-socket.on('player_health_update', (data) => {
-    console.log("Player "+data.playerId+" dammaged, now has "+data.health+" left")
-    let player = otherPlayers.get(data.playerId)
-    max_health = player.attributes.max_health
-    player.health = data.health
-    player.attributes.max_health = max_health
-    otherPlayers.set(data.playerId,player)  
-    requestAnimationFrame(game.frame);
-})
-
-class artist {
-    constructor(context, canvas, image) {
-        this.context = context;
-        this.canvas = canvas;
-        this.backgroundImg = image;
-        this.loaded = false;
-        this.lastSpacePress = false;
-
-        const spawnRadius = Math.random() * 750;
-        const spawnAngle = Math.random() * (Math.PI / 2);
-
-        this.player = new Player(
-            spawnRadius * Math.cos(spawnAngle),
-            spawnRadius * Math.sin(spawnAngle),
-            0,
-            'idle',
-            100,
-            socket.id || 'local', // Use socket.id when available
-            playerName,
-            1
-        );
-
-        this.cameraDeg = 0; // Camera rotation in degrees
-
-        this.backgroundImg.onload = () => {
-            this.loaded = true;
-            this.frame();
-        };
-    }
-
-    draw_background() {
-        if (!this.loaded) return;
-
-        this.context.save();
-
-        this.context.translate(this.canvas.width / 2, this.canvas.height / 2);
-        this.context.rotate(this.player.radians(this.cameraDeg)); // Convert to radians here
-
-        const diagonal = Math.sqrt(
-            this.canvas.width * this.canvas.width +
-            this.canvas.height * this.canvas.height
-        );
-
-        const drawSize = diagonal;
-
-        const sourceX = this.player.absX - drawSize / 2;
-        const sourceY = this.player.absY - drawSize / 2;
-        const sourceWidth = drawSize;
-        const sourceHeight = drawSize;
-
-        const actualSourceX = Math.max(0, sourceX);
-        const actualSourceY = Math.max(0, sourceY);
-        const actualSourceWidth = Math.min(sourceWidth, this.backgroundImg.width - actualSourceX);
-        const actualSourceHeight = Math.min(sourceHeight, this.backgroundImg.height - actualSourceY);
-
-        const destOffsetX = actualSourceX - sourceX;
-        const destOffsetY = actualSourceY - sourceY;
-
-        this.context.drawImage(
-            this.backgroundImg,
-            actualSourceX, actualSourceY,
-            actualSourceWidth, actualSourceHeight, -drawSize / 2 + destOffsetX, -drawSize / 2 + destOffsetY,
-            actualSourceWidth,
-            actualSourceHeight
-        );
-
-        this.context.restore();
-    }
-
-    draw_triangle(x, y, rotationDeg, color = 'blue', scale = 0) {
-        this.context.save();
-        if (scale == 0) {
-            scale = this.player.attributes.scale;
-        }
-        this.context.translate(x, y);
-        this.context.rotate(this.player.radians(rotationDeg)); // Convert to radians here
-
-        this.context.beginPath();
-        this.context.moveTo(0, -(10 * scale * 2));
-        this.context.lineTo((10 * scale), (10 * scale));
-        this.context.lineTo(-(10 * scale), (10 * scale));
-        this.context.closePath();
-        this.context.fillStyle = color;
-        this.context.fill();
-
-        this.context.lineWidth = 2;
-        this.context.strokeStyle = 'black';
-        this.context.stroke();
-
-        this.context.restore();
-    }
-
-    draw_projectile(projectile) {
-        const screenPos = this.worldToScreen(projectile.absX, projectile.absY, projectile.rotationDeg);
-
-        this.context.save();
-
-        const projectileLength = 20;
-        const rotRad = this.player.radians(screenPos.rotation); // Convert to radians here
-        const deltaX = projectileLength * Math.cos(rotRad);
-        const deltaY = projectileLength * Math.sin(rotRad);
-
-        this.context.beginPath();
-        this.context.moveTo(screenPos.x, screenPos.y);
-        this.context.lineTo(screenPos.x + deltaX, screenPos.y + deltaY);
-
-        this.context.lineWidth = 4;
-        this.context.strokeStyle = 'red';
-        this.context.stroke();
-
-        this.context.restore();
-    }
-
-    worldToScreen(worldX, worldY, worldRotationDeg) {
-        const relX = worldX - this.player.absX;
-        const relY = worldY - this.player.absY;
-
-        const camRad = this.player.radians(this.cameraDeg);
-        const cosRot = Math.cos(camRad);
-        const sinRot = Math.sin(camRad);
-        const rotatedX = relX * cosRot - relY * sinRot;
-        const rotatedY = relX * sinRot + relY * cosRot;
-
-        const screenX = this.canvas.width / 2 + rotatedX;
-        const screenY = this.canvas.height / 2 + rotatedY;
-
-        const screenRotation = worldRotationDeg + this.cameraDeg;
-
-        return { x: screenX, y: screenY, rotation: screenRotation };
-    }
-
-    shootProjectile() {
-        // Calculate projectile spawn position at the tip of the triangle
-        const scale = this.player.attributes.scale;
-        const tipDistance = 10 * scale * 2; // Distance to tip
-
-        // Convert to radians for trig
-        const rotRad = this.player.radians(this.player.absRotationDeg);
-        
-        // Spawn projectile at the tip of the triangle
-        const projectileX = this.player.absX + Math.sin(rotRad) * tipDistance;
-        const projectileY = this.player.absY - Math.cos(rotRad) * tipDistance;
-
-        const projectile = new Projectile(
-            projectileX,
-            projectileY,
-            this.player.absRotationDeg + angle, // Store in degrees
-            10,
-            this.player.attributes.shoot_strength,
-            socket.id
-        );
-
-        // Add projectile to local array so it renders
-        projectiles.push(projectile);
-
-        console.log('Shooting projectile locally:', projectile);
-        socket.emit('projectile_fired', {
-            x: projectile.absX,
-            y: projectile.absY,
-            rotation: projectile.rotationDeg,
-            speed: 10,
-            damage: this.player.attributes.shoot_strength,
-            ownerId: socket.id
-        });
-        console.log('Emitted projectile_fired to server');
-    }
-
-    clamp_rotation(rotationDeg){
-        rotationDeg = rotationDeg % 360;
-        if (rotationDeg < 0) rotationDeg += 360;
-        return rotationDeg;
-    }
-
-    update() {
-        const moveSpeed = this.player.attributes["speed"];
-        const rotateSpeed = this.player.attributes["rotate_speed"];
-
-        if (pressedKeys['q'] || pressedKeys['Q']) {
-            this.cameraDeg += rotateSpeed;
-        }
-        if (pressedKeys['e'] || pressedKeys['E']) {
-            this.cameraDeg -= rotateSpeed;
-        }
-        
-        this.cameraDeg = this.clamp_rotation(this.cameraDeg);
-        this.player.absRotationDeg = this.clamp_rotation(-this.cameraDeg);
-
-        // Shoot projectile with spacebar
-        if (pressedKeys[' '] && !this.lastSpacePress) {
-            this.shootProjectile();
-            this.lastSpacePress = true;
-        }
-        if (!pressedKeys[' ']) {
-            this.lastSpacePress = false;
+            this.backgroundImg.onload = () => {
+                this.loaded = true;
+                this.frame();
+            };
         }
 
-        // Update all projectiles and check collisions
-        for (let i = projectiles.length - 1; i >= 0; i--) {
-            projectiles[i].update();
+        draw_background() {
+            if (!this.loaded) return;
 
-            let projectileHit = false;
+            this.context.save();
 
-            // Check collision with local player (only if not owner)
-            if (projectiles[i].ownerId !== socket.id && 
-                projectiles[i].ownerId !== this.player.id && 
-                projectiles[i].checkPlayerCollision(this.player)) {
-                console.log("Local player hit by projectile!");
-                
-                // Apply damage locally for instant feedback
-                const oldHealth = this.player.health;
-                this.player.takeDamage(projectiles[i].damage);
-                
-                // Emit to server that we got hit
-                socket.emit('health_update', {
-                    playerId: socket.id,
-                    health: this.player.health
-                });
-                
-                projectileHit = true;
+            this.context.translate(this.canvas.width / 2, this.canvas.height / 2);
+            this.context.rotate(this.player.radians(this.cameraDeg)); // Convert to radians here
+
+            const diagonal = Math.sqrt(
+                this.canvas.width * this.canvas.width +
+                this.canvas.height * this.canvas.height
+            );
+
+            const drawSize = diagonal;
+
+            const sourceX = this.player.absX - drawSize / 2;
+            const sourceY = this.player.absY - drawSize / 2;
+            const sourceWidth = drawSize;
+            const sourceHeight = drawSize;
+
+            const actualSourceX = Math.max(0, sourceX);
+            const actualSourceY = Math.max(0, sourceY);
+            const actualSourceWidth = Math.min(sourceWidth, this.backgroundImg.width - actualSourceX);
+            const actualSourceHeight = Math.min(sourceHeight, this.backgroundImg.height - actualSourceY);
+
+            const destOffsetX = actualSourceX - sourceX;
+            const destOffsetY = actualSourceY - sourceY;
+
+            this.context.drawImage(
+                this.backgroundImg,
+                actualSourceX, actualSourceY,
+                actualSourceWidth, actualSourceHeight, -drawSize / 2 + destOffsetX, -drawSize / 2 + destOffsetY,
+                actualSourceWidth,
+                actualSourceHeight
+            );
+
+            this.context.restore();
+        }
+
+        draw_triangle(x, y, rotationDeg, color = 'blue', scale = 0) {
+            this.context.save();
+            if (scale == 0) {
+                scale = this.player.attributes.scale;
+            }
+            this.context.translate(x, y);
+            this.context.rotate(this.player.radians(rotationDeg)); // Convert to radians here
+
+            this.context.beginPath();
+            this.context.moveTo(0, -(10 * scale * 2));
+            this.context.lineTo((10 * scale), (10 * scale));
+            this.context.lineTo(-(10 * scale), (10 * scale));
+            this.context.closePath();
+            this.context.fillStyle = color;
+            this.context.fill();
+
+            this.context.lineWidth = 2;
+            this.context.strokeStyle = 'black';
+            this.context.stroke();
+
+            this.context.restore();
+        }
+
+        draw_projectile(projectile) {
+            const screenPos = this.worldToScreen(projectile.absX, projectile.absY, projectile.rotationDeg);
+
+            this.context.save();
+
+            const projectileLength = 20;
+            const rotRad = this.player.radians(screenPos.rotation); // Convert to radians here
+            const deltaX = projectileLength * Math.cos(rotRad);
+            const deltaY = projectileLength * Math.sin(rotRad);
+
+            this.context.beginPath();
+            this.context.moveTo(screenPos.x, screenPos.y);
+            this.context.lineTo(screenPos.x + deltaX, screenPos.y + deltaY);
+
+            this.context.lineWidth = 4;
+            this.context.strokeStyle = 'red';
+            this.context.stroke();
+
+            this.context.restore();
+        }
+
+        worldToScreen(worldX, worldY, worldRotationDeg) {
+            const relX = worldX - this.player.absX;
+            const relY = worldY - this.player.absY;
+
+            const camRad = this.player.radians(this.cameraDeg);
+            const cosRot = Math.cos(camRad);
+            const sinRot = Math.sin(camRad);
+            const rotatedX = relX * cosRot - relY * sinRot;
+            const rotatedY = relX * sinRot + relY * cosRot;
+
+            const screenX = this.canvas.width / 2 + rotatedX;
+            const screenY = this.canvas.height / 2 + rotatedY;
+
+            const screenRotation = worldRotationDeg + this.cameraDeg;
+
+            return { x: screenX, y: screenY, rotation: screenRotation };
+        }
+
+        shootProjectile() {
+            // Calculate projectile spawn position at the tip of the triangle
+            const scale = this.player.attributes.scale;
+            const tipDistance = 10 * scale * 2; // Distance to tip
+
+            // Convert to radians for trig
+            const rotRad = this.player.radians(this.player.absRotationDeg);
+            
+            // Spawn projectile at the tip of the triangle
+            const projectileX = this.player.absX + Math.sin(rotRad) * tipDistance;
+            const projectileY = this.player.absY - Math.cos(rotRad) * tipDistance;
+
+            const projectile = new Projectile(
+                projectileX,
+                projectileY,
+                this.player.absRotationDeg + angle, // Store in degrees
+                10,
+                this.player.attributes.shoot_strength,
+                socket.id
+            );
+
+            // Add projectile to local array so it renders
+            projectiles.push(projectile);
+
+            console.log('Shooting projectile locally:', projectile);
+            socket.emit('projectile_fired', {
+                x: projectile.absX,
+                y: projectile.absY,
+                rotation: projectile.rotationDeg,
+                speed: 10,
+                damage: this.player.attributes.shoot_strength,
+                ownerId: socket.id
+            });
+            console.log('Emitted projectile_fired to server');
+        }
+
+        clamp_rotation(rotationDeg){
+            rotationDeg = rotationDeg % 360;
+            if (rotationDeg < 0) rotationDeg += 360;
+            return rotationDeg;
+        }
+
+        update() {
+            const moveSpeed = this.player.attributes["speed"];
+            const rotateSpeed = this.player.attributes["rotate_speed"];
+
+            if (pressedKeys['q'] || pressedKeys['Q']) {
+                this.cameraDeg += rotateSpeed;
+            }
+            if (pressedKeys['e'] || pressedKeys['E']) {
+                this.cameraDeg -= rotateSpeed;
             }
             
-            // Remove projectile if it hit something or expired
-            if (projectileHit || projectiles[i].isExpired()) {
-                projectiles.splice(i, 1);
+            this.cameraDeg = this.clamp_rotation(this.cameraDeg);
+            this.player.absRotationDeg = this.clamp_rotation(-this.cameraDeg);
+
+            // Shoot projectile with spacebar
+            if (pressedKeys[' '] && !this.lastSpacePress) {
+                this.shootProjectile();
+                this.lastSpacePress = true;
             }
-        }
+            if (!pressedKeys[' ']) {
+                this.lastSpacePress = false;
+            }
 
-        let dx = 0;
-        let dy = 0;
+            // Update all projectiles and check collisions
+            for (let i = projectiles.length - 1; i >= 0; i--) {
+                projectiles[i].update();
 
-        const playerRotRad = this.player.radians(this.player.absRotationDeg);
+                let projectileHit = false;
 
-        if (pressedKeys['w'] || pressedKeys['W'] || pressedKeys['ArrowUp']) {
-            dx += Math.sin(playerRotRad) * moveSpeed;
-            dy -= Math.cos(playerRotRad) * moveSpeed;
-        }
-        if (pressedKeys['s'] || pressedKeys['S'] || pressedKeys['ArrowDown']) {
-            dx -= Math.sin(playerRotRad) * moveSpeed;
-            dy += Math.cos(playerRotRad) * moveSpeed;
-        }
-        if (pressedKeys['a'] || pressedKeys['A'] || pressedKeys['ArrowLeft']) {
-            dx -= Math.cos(playerRotRad) * moveSpeed;
-            dy -= Math.sin(playerRotRad) * moveSpeed;
-        }
-        if (pressedKeys['d'] || pressedKeys['D'] || pressedKeys['ArrowRight']) {
-            dx += Math.cos(playerRotRad) * moveSpeed;
-            dy += Math.sin(playerRotRad) * moveSpeed;
-        }
-
-        const originalX = this.player.absX;
-        const originalY = this.player.absY;
-
-        this.player.absX += dx;
-        this.player.absY += dy;
-
-        this.player.clamp_to_borders();
-
-        dx = this.player.absX - originalX;
-        dy = this.player.absY - originalY;
-
-        otherPlayers.forEach(player => {
-            if (this.player.check_player_collision(player)) {
-                const collisionData = this.player.getCollisionData(player);
-                if (collisionData) {
-                    const normal = collisionData.normal;
-                    const depth = collisionData.depth;
-
-                    const separationBuffer = 2.0;
-                    const totalSeparation = depth + separationBuffer;
-
-                    this.player.absX += normal.x * totalSeparation;
-                    this.player.absY += normal.y * totalSeparation;
-
-                    const dotProduct = dx * normal.x + dy * normal.y;
-
-                    if (dotProduct < 0) {
-                        const slideDx = dx - dotProduct * normal.x;
-                        const slideDy = dy - dotProduct * normal.y;
-
-                        this.player.absX += slideDx;
-                        this.player.absY += slideDy;
-                    }
-
-                    dx = this.player.absX - originalX;
-                    dy = this.player.absY - originalY;
+                // Check collision with local player (only if not owner)
+                if (projectiles[i].ownerId !== socket.id && 
+                    projectiles[i].ownerId !== this.player.id && 
+                    projectiles[i].checkPlayerCollision(this.player)) {
+                    console.log("Local player hit by projectile!");
+                    
+                    // Apply damage locally for instant feedback
+                    const oldHealth = this.player.health;
+                    this.player.takeDamage(projectiles[i].damage, projectiles[i].ownerId);
+                    
+                    // Emit to server that we got hit
+                    socket.emit('health_update', {
+                        playerId: socket.id,
+                        health: this.player.health
+                    });
+                    
+                    projectileHit = true;
+                }
+                
+                // Remove projectile if it hit something or expired
+                if (projectileHit || projectiles[i].isExpired()) {
+                    projectiles.splice(i, 1);
                 }
             }
-        });
 
-        this.player.clamp_to_borders();
+            let dx = 0;
+            let dy = 0;
 
-        socket.emit('player_move', {
-            x: this.player.absX,
-            y: this.player.absY,
-            rotation: this.player.absRotationDeg,
-            health: this.player.health,
-            action: this.player.action,
-            scale: this.player.attributes.scale
-        });
-    }
+            const playerRotRad = this.player.radians(this.player.absRotationDeg);
 
-    drawHealthBar(x, y, rotationDeg, health, maxHealth, scale, isLocalPlayer = false) {
-        this.context.save();
+            if (pressedKeys['w'] || pressedKeys['W'] || pressedKeys['ArrowUp']) {
+                dx += Math.sin(playerRotRad) * moveSpeed;
+                dy -= Math.cos(playerRotRad) * moveSpeed;
+            }
+            if (pressedKeys['s'] || pressedKeys['S'] || pressedKeys['ArrowDown']) {
+                dx -= Math.sin(playerRotRad) * moveSpeed;
+                dy += Math.cos(playerRotRad) * moveSpeed;
+            }
+            if (pressedKeys['a'] || pressedKeys['A'] || pressedKeys['ArrowLeft']) {
+                dx -= Math.cos(playerRotRad) * moveSpeed;
+                dy -= Math.sin(playerRotRad) * moveSpeed;
+            }
+            if (pressedKeys['d'] || pressedKeys['D'] || pressedKeys['ArrowRight']) {
+                dx += Math.cos(playerRotRad) * moveSpeed;
+                dy += Math.sin(playerRotRad) * moveSpeed;
+            }
 
-        const barWidth = 40 * scale;
-        const barHeight = 5;
-        const healthPercent = Math.max(0, Math.min(100, (health / maxHealth) * 100));
-        const filledWidth = (barWidth * healthPercent) / 100;
+            const originalX = this.player.absX;
+            const originalY = this.player.absY;
 
-        // Position below triangle base
-        const offsetY = 25 * scale;
+            this.player.absX += dx;
+            this.player.absY += dy;
 
-        this.context.translate(x, y + offsetY);
-        
-        // Only rotate for local player's health bar
-        // For other players, keep health bar upright (don't rotate)
-        if (isLocalPlayer) {
-            this.context.rotate(this.player.radians(rotationDeg));
+            this.player.clamp_to_borders();
+
+            dx = this.player.absX - originalX;
+            dy = this.player.absY - originalY;
+
+            otherPlayers.forEach(player => {
+                if (this.player.check_player_collision(player)) {
+                    const collisionData = this.player.getCollisionData(player);
+                    if (collisionData) {
+                        const normal = collisionData.normal;
+                        const depth = collisionData.depth;
+
+                        const separationBuffer = 2.0;
+                        const totalSeparation = depth + separationBuffer;
+
+                        this.player.absX += normal.x * totalSeparation;
+                        this.player.absY += normal.y * totalSeparation;
+
+                        const dotProduct = dx * normal.x + dy * normal.y;
+
+                        if (dotProduct < 0) {
+                            const slideDx = dx - dotProduct * normal.x;
+                            const slideDy = dy - dotProduct * normal.y;
+
+                            this.player.absX += slideDx;
+                            this.player.absY += slideDy;
+                        }
+
+                        dx = this.player.absX - originalX;
+                        dy = this.player.absY - originalY;
+                    }
+                }
+            });
+
+            this.player.clamp_to_borders();
+
+            socket.emit('player_move', {
+                x: this.player.absX,
+                y: this.player.absY,
+                rotation: this.player.absRotationDeg,
+                health: this.player.health,
+                action: this.player.action,
+                scale: this.player.attributes.scale
+            });
         }
 
-        // Draw gray background (empty health)
-        this.context.fillStyle = 'gray';
-        this.context.fillRect(-barWidth / 2, 0, barWidth, barHeight);
-
-        // Draw red health
-        this.context.fillStyle = 'red';
-        this.context.fillRect(-barWidth / 2, 0, filledWidth, barHeight);
-
-        // Draw percentage text below bar
-        this.context.fillStyle = 'white';
-        this.context.strokeStyle = 'black';
-        this.context.lineWidth = 2;
-        this.context.font = '12px Arial';
-        this.context.textAlign = 'center';
-        const percentText = Math.round(healthPercent) + '%';
-        this.context.strokeText(percentText, 0, barHeight + 12);
-        this.context.fillText(percentText, 0, barHeight + 12);
-
-        this.context.restore();
-    }
-
-    drawOtherPlayers() {
-        otherPlayers.forEach(player => {
-            const screenPos = this.worldToScreen(
-                player.absX,
-                player.absY,
-                player.absRotationDeg
-            );
-
-            this.draw_triangle(
-                screenPos.x,
-                screenPos.y,
-                screenPos.rotation,
-                'red',
-                player.attributes.scale
-            );
-
-            // Draw player name
+        drawHealthBar(x, y, rotationDeg, health, maxHealth, scale, isLocalPlayer = false) {
             this.context.save();
+
+            const barWidth = 40 * scale;
+            const barHeight = 5;
+            const healthPercent = Math.max(0, Math.min(100, (health / maxHealth) * 100));
+            const filledWidth = (barWidth * healthPercent) / 100;
+
+            // Position below triangle base
+            const offsetY = 25 * scale;
+
+            this.context.translate(x, y + offsetY);
+            
+            // Only rotate for local player's health bar
+            // For other players, keep health bar upright (don't rotate)
+            if (isLocalPlayer) {
+                this.context.rotate(this.player.radians(rotationDeg));
+            }
+
+            // Draw gray background (empty health)
+            this.context.fillStyle = 'gray';
+            this.context.fillRect(-barWidth / 2, 0, barWidth, barHeight);
+
+            // Draw red health
+            this.context.fillStyle = 'red';
+            this.context.fillRect(-barWidth / 2, 0, filledWidth, barHeight);
+
+            // Draw percentage text below bar
             this.context.fillStyle = 'white';
             this.context.strokeStyle = 'black';
-            this.context.lineWidth = 3;
-            this.context.font = '14px Arial';
+            this.context.lineWidth = 2;
+            this.context.font = '12px Arial';
             this.context.textAlign = 'center';
-            this.context.strokeText(player.name, screenPos.x, screenPos.y - 30);
-            this.context.fillText(player.name, screenPos.x, screenPos.y - 30);
+            const percentText = Math.round(healthPercent) + '%';
+            this.context.strokeText(percentText, 0, barHeight + 12);
+            this.context.fillText(percentText, 0, barHeight + 12);
+
             this.context.restore();
-            
-            console.log(player.health+" : "+ player.attributes.max_health)
-            this.drawHealthBar(
-                screenPos.x,
-                screenPos.y,
-                screenPos.rotation,
-                player.health,
-                player.attributes.max_health,
-                player.attributes.scale,
-                false
-            );
-        });
-    }
-
-    tick = () => {
-        if (this.player.effects) {
-            // Process effects here
-        }
-    };
-
-    frame = () => {
-        this.update();
-
-        if (this.player.health <= 0) {
-            socket.emit('disconnect') // change to kill
-            window.location.href = "https://www.youtube.com/results?search_query=how+to+aim";
-            this.player.health = -1
         }
 
-        this.context.clearRect(0, 0, this.canvas.width, this.canvas.height);
+        drawOtherPlayers() {
+            otherPlayers.forEach(player => {
+                const screenPos = this.worldToScreen(
+                    player.absX,
+                    player.absY,
+                    player.absRotationDeg
+                );
 
-        this.draw_background();
+                this.draw_triangle(
+                    screenPos.x,
+                    screenPos.y,
+                    screenPos.rotation,
+                    'red',
+                    player.attributes.scale
+                );
 
-        this.draw_triangle(this.canvas.width / 2, this.canvas.height / 2, 0, 'blue');
+                // Draw player name
+                this.context.save();
+                this.context.fillStyle = 'white';
+                this.context.strokeStyle = 'black';
+                this.context.lineWidth = 3;
+                this.context.font = '14px Arial';
+                this.context.textAlign = 'center';
+                this.context.strokeText(player.name, screenPos.x, screenPos.y - 30);
+                this.context.fillText(player.name, screenPos.x, screenPos.y - 30);
+                this.context.restore();
+                
+                console.log(player.health+" : "+ player.attributes.max_health)
+                this.drawHealthBar(
+                    screenPos.x,
+                    screenPos.y,
+                    screenPos.rotation,
+                    player.health,
+                    player.attributes.max_health,
+                    player.attributes.scale,
+                    false
+                );
+            });
+        }
 
-        // Draw local player health bar
-        this.drawHealthBar(
-            this.canvas.width / 2,
-            this.canvas.height / 2,
-            0,
-            this.player.health,
-            this.player.attributes.max_health,
-            this.player.attributes.scale,
-            true
-        );
-
-        this.drawOtherPlayers();
-
-        // Draw all projectiles
-        projectiles.forEach(projectile => {
-            this.draw_projectile(projectile);
-        });
-
-        this.context.strokeStyle = "black";
-        this.context.lineWidth = 2;
-        this.context.strokeRect(0, 0, this.canvas.width, this.canvas.height);
-
-        requestAnimationFrame(this.frame);
-    }
-}
-
-var background = new Image();
-background.src = '/static/img/map1.png';
-var game = new artist(canvas.getContext('2d'), canvas, background);
-
-function tp(x, y) {
-    game.player.absX = x;
-    game.player.absY = y;
-}
-
-const pressedKeys = {};
-window.addEventListener("keydown", (event) => {
-    pressedKeys[event.key] = true;
-});
-
-function isCapital(key) {
-    return key.length === 1 && key !== key.toLowerCase();
-}
-
-window.addEventListener("keyup", (event) => {
-    pressedKeys[event.key] = false;
-
-    if (event.key === "Shift") {
-        for (const key in pressedKeys) {
-            if (pressedKeys.hasOwnProperty(key)) {
-                if (isCapital(key)) {
-                    pressedKeys[key] = false;
-                }
+        tick = () => {
+            if (this.player.effects) {
+                // Process effects here
             }
+        };
+
+        frame = () => {
+            this.update();
+
+            if (this.player.health <= 0) {
+                socket.emit('played_death', {
+                    'playerId': game.player.name,
+                    'assistable_a': this.player.assistable_a,
+                    'assistable_b': this.player.assistable_b,
+                    'killerId': this.player.damage[this.player.damage.length -1]?.from || "Environment"
+                }) 
+                console.log("Died to "+this.player.damage[this.player.damage.length -1]?.from || "Environment");
+                window.location.href = "https://www.youtube.com/results?search_query=how+to+aim";
+                this.player.health = -1
+            }
+
+            this.context.clearRect(0, 0, this.canvas.width, this.canvas.height);
+
+            this.draw_background();
+
+            this.draw_triangle(this.canvas.width / 2, this.canvas.height / 2, 0, 'blue');
+
+            // Draw local player health bar
+            this.drawHealthBar(
+                this.canvas.width / 2,
+                this.canvas.height / 2,
+                0,
+                this.player.health,
+                this.player.attributes.max_health,
+                this.player.attributes.scale,
+                true
+            );
+
+            this.drawOtherPlayers();
+
+            // Draw all projectiles
+            projectiles.forEach(projectile => {
+                this.draw_projectile(projectile);
+            });
+
+            this.context.strokeStyle = "black";
+            this.context.lineWidth = 2;
+            this.context.strokeRect(0, 0, this.canvas.width, this.canvas.height);
+
+            requestAnimationFrame(this.frame);
         }
     }
-});
+
+    var background = new Image();
+    background.src = '/static/img/map1.png';
+    var game = new artist(canvas.getContext('2d'), canvas, background);
+    window.game = game;
+
+    function tp(x, y) {
+        game.player.absX = x;
+        game.player.absY = y;
+    }       
+}
+
+
+if (!window.playerReady) {
+    console.log('Waiting for player to be ready...');
+    
+    // Wrap the game initialization
+    window.initializeGame = function() {
+        console.log('Player ready! Starting game with:', window.playerData);
+        
+        // Validate we have the necessary player data
+        if (!window.playerData || (!window.playerData.playerId && !window.playerData.isAuthenticated)) {
+            console.error('Invalid player data:', window.playerData);
+            alert('Failed to initialize player. Please refresh and try again.');
+            return;
+        }
+        
+        startGame();
+    };
+    
+    // Listen for player ready event
+    window.addEventListener('playerReady', function(e) {
+        console.log('Player data received:', e.detail);
+        
+        // Update window.playerData with the event data
+        if (e.detail) {
+            window.playerData = e.detail;
+        }
+        
+        window.initializeGame();
+    });
+    
+    // Stop execution - wait for player
+    throw new Error('WAITING_FOR_PLAYER');
+}
+if (window.playerData && window.playerData.isAuthenticated) {
+    startGame();
+}
+
+
+
