@@ -23,7 +23,7 @@
 </head>
 <body>
     <header id="header">
-        <h1>Challenger</h1>
+        <h1>Challenger V1.0</h1>
         {% if current_user.is_authenticated %}
             <a href="{{ url_for('profile') }}" class="auth-button profile-button">
                 Profile ({{ current_user.username }})
@@ -206,4 +206,5 @@
     <script src="{{ url_for('static', filename='js/inputs.js') }}"></script>
     <script src="{{ url_for('static', filename='js/game.js') }}"></script>
 </body>
+
 </html>
