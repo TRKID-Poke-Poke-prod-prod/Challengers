@@ -5,17 +5,20 @@ import sqlite3
 import uuid
 from datetime import datetime, timedelta
 
-for i in ['flask', 'flask_socketio', 'flask_login', 'eventlet','werkzeug']:
+# Install required packages
+for i in ['flask', 'flask_socketio', 'flask_login', 'eventlet','werkzeug', 'pyopenssl']:
     try:
-        __import__(i.replace('-', '_'))
+        __import__(i)
     except:
         os.system(f'{sys.executable} -m pip install {i}')
 
-from flask import Flask, render_template, request, redirect, url_for, flash, make_response, jsonify
+from flask import Flask, render_template, request, redirect, url_for, flash, make_response, jsonify, send_from_directory
 from flask_socketio import SocketIO, emit
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
 import eventlet
+import eventlet.wsgi
+import eventlet.green.ssl as ssl
 
 # Database setup
 def init_db():
@@ -123,6 +126,105 @@ def save_player_to_db(player_id, player_data):
 @app.route('/')
 def index():
     return render_template('index.html')
+
+# Service Worker route - serve from static directory at root /sw.js
+@app.route('/sw.js')
+def serve_sw():
+    """Serve service worker with detailed error logging"""
+    import traceback
+    try:
+        sw_path = os.path.join(app.static_folder, 'sw.js')
+        print(f"[DEBUG] Looking for sw.js at: {sw_path}")
+        print(f"[DEBUG] File exists: {os.path.exists(sw_path)}")
+        print(f"[DEBUG] app.static_folder: {app.static_folder}")
+        
+        if not os.path.exists(sw_path):
+            # File doesn't exist - create it!
+            print("[DEBUG] sw.js not found, creating it...")
+            os.makedirs(app.static_folder, exist_ok=True)
+            with open(sw_path, 'w') as f:
+                f.write("""console.log('[Service Worker] Loaded');
+self.addEventListener('install', e => {
+  console.log('[SW] Install');
+  self.skipWaiting();
+});
+self.addEventListener('activate', e => {
+  console.log('[SW] Activate');
+  e.waitUntil(clients.claim());
+});
+self.addEventListener('fetch', e => {
+  e.respondWith(fetch(e.request));
+});""")
+            print("[DEBUG] sw.js created successfully")
+        
+        response = make_response(send_from_directory(app.static_folder, 'sw.js'))
+        response.headers['Content-Type'] = 'application/javascript'
+        response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+        response.headers['Pragma'] = 'no-cache'
+        response.headers['Expires'] = '0'
+        print("[DEBUG] sw.js served successfully")
+        return response
+    except Exception as e:
+        print(f"[ERROR] Failed to serve sw.js: {e}")
+        print(traceback.format_exc())
+        return f"Error serving sw.js: {e}", 500
+
+@app.route('/manifest.json')
+def serve_manifest():
+    """Serve PWA manifest"""
+    response = make_response(send_from_directory(app.static_folder, 'manifest.json'))
+    response.headers['Content-Type'] = 'application/json'
+    return response
+
+
+@app.route('/test-sw')
+def test_sw():
+    """Test page for Service Worker debugging"""
+    return '''<!DOCTYPE html>
+<html><head><title>SW Test</title></head>
+<body>
+<h1>Service Worker Test</h1>
+<div id="status"></div>
+<button onclick="test()">Test SW</button>
+<pre id="log"></pre>
+<script>
+const log = document.getElementById('log');
+const status = document.getElementById('status');
+function test() {
+    log.textContent = 'Testing...\\n';
+    
+    // Check if SW is supported
+    if (!('serviceWorker' in navigator)) {
+        log.textContent += 'ERROR: Service Worker not supported\\n';
+        return;
+    }
+    log.textContent += 'OK: Service Worker supported\\n';
+    
+    // Test fetch sw.js
+    fetch('/sw.js')
+        .then(r => {
+            log.textContent += `OK: /sw.js exists (status ${r.status})\\n`;
+            return r.text();
+        })
+        .then(content => {
+            log.textContent += `OK: sw.js size: ${content.length} bytes\\n`;
+            // Register
+            return navigator.serviceWorker.register('/sw.js');
+        })
+        .then(reg => {
+            log.textContent += `SUCCESS: Registered! Scope: ${reg.scope}\\n`;
+            status.innerHTML = '<h2 style="color:green">✅ SUCCESS!</h2>';
+        })
+        .catch(err => {
+            log.textContent += `ERROR: ${err.message}\\n`;
+            status.innerHTML = '<h2 style="color:red">❌ FAILED</h2>';
+        });
+}
+// Auto-run on load
+window.onload = test;
+</script>
+</body></html>'''
+
 
 @app.route('/api/create-player', methods=['POST'])
 def create_player():
@@ -331,4 +433,49 @@ def handle_disconnect():
         emit('players_update', players, broadcast=True)
 
 if __name__ == '__main__':
-    socketio.run(app, debug=True, host='0.0.0.0', port=80, allow_unsafe_werkzeug=True)
+    # HTTPS Configuration
+    # For Windows/development: use HTTP (HTTPS requires complex setup on Windows)
+    # For production Linux: use Nginx with Let's Encrypt
+    
+    USE_HTTPS = False  # Set to True only if you have cert/key files
+    
+    if USE_HTTPS:
+        # You need to generate certificate files first:
+        # openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -days 365 -nodes
+        CERT_FILE = 'cert.pem'
+        KEY_FILE = 'key.pem'
+        
+        if os.path.exists(CERT_FILE) and os.path.exists(KEY_FILE):
+            # Wrap socket with SSL for eventlet
+            import eventlet
+            import eventlet.wsgi
+            
+            print(f"🔒 Starting HTTPS server on port 443")
+            print(f"📜 Using certificate: {CERT_FILE}")
+            
+            # Create SSL-wrapped socket
+            sock = eventlet.listen(('0.0.0.0', 443))
+            ssl_sock = eventlet.wrap_ssl(sock,
+                                        certfile=CERT_FILE,
+                                        keyfile=KEY_FILE,
+                                        server_side=True)
+            
+            # Run with SSL socket
+            eventlet.wsgi.server(ssl_sock, app)
+        else:
+            print(f"❌ Certificate files not found: {CERT_FILE}, {KEY_FILE}")
+            print("Falling back to HTTP...")
+            USE_HTTPS = False
+    
+    if not USE_HTTPS:
+        print("⚠️  Running HTTP server on port 80")
+        print("💡 For HTTPS in production, use Nginx + Let's Encrypt")
+        print("💡 Service Workers work on HTTP localhost for development")
+        
+        socketio.run(
+            app, 
+            debug=True, 
+            host='0.0.0.0', 
+            port=80,
+            allow_unsafe_werkzeug=True
+        )

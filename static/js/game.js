@@ -41,12 +41,13 @@ function startGame() {
             this.radius = 5; // collision radius
         }
 
-        update() {
+        // Updated: accept deltaTime multiplier (default 1 for backwards compatibility)
+        update(deltaTime = 1) {
             // Convert to radians for math
             const rotationRad = this.rotationDeg * Math.PI / 180;
-            // Move projectile in straight line
-            this.absX += Math.cos(rotationRad) * this.speed;
-            this.absY += Math.sin(rotationRad) * this.speed;
+            // Move projectile in straight line, scaled by deltaTime
+            this.absX += Math.cos(rotationRad) * this.speed * deltaTime;
+            this.absY += Math.sin(rotationRad) * this.speed * deltaTime;
         }
 
         isExpired() {
@@ -129,7 +130,7 @@ function startGame() {
             this.lastCollisionDepth = 0;
             this.attributes = {
                 scale: scale,
-                rotate_speed: 3, // degrees per frame
+                rotate_speed: 8, // degrees per frame
                 max_health: max_health,
                 speed: 3,
                 mana_regen: 2,
@@ -458,6 +459,11 @@ function startGame() {
 
             this.cameraDeg = 0; // Camera rotation in degrees
 
+            // Added: delta time tracking
+            this.lastFrameTime = performance.now();
+            this.deltaTime = 1;
+            this.targetFPS = 24; // base speeds on 60 FPS
+
             this.backgroundImg.onload = () => {
                 this.loaded = true;
                 this.frame();
@@ -608,8 +614,9 @@ function startGame() {
         }
 
         update() {
-            const moveSpeed = this.player.attributes["speed"];
-            const rotateSpeed = this.player.attributes["rotate_speed"];
+            // Use deltaTime to scale movement/rotation
+            const moveSpeed = this.player.attributes["speed"] * this.deltaTime;
+            const rotateSpeed = this.player.attributes["rotate_speed"] * this.deltaTime;
 
             if (pressedKeys['q'] || pressedKeys['Q']) {
                 this.cameraDeg += rotateSpeed;
@@ -632,7 +639,8 @@ function startGame() {
 
             // Update all projectiles and check collisions
             for (let i = projectiles.length - 1; i >= 0; i--) {
-                projectiles[i].update();
+                // Pass deltaTime so projectile movement is framerate-independent
+                projectiles[i].update(this.deltaTime);
 
                 let projectileHit = false;
 
@@ -822,6 +830,14 @@ function startGame() {
         };
 
         frame = () => {
+            // Calculate delta time
+            const currentTime = performance.now();
+            const rawDelta = (currentTime - this.lastFrameTime) / 1000; // seconds
+            this.lastFrameTime = currentTime;
+
+            // Normalize to target FPS (60). 1.0 at 60fps, 2.0 at 30fps, 0.5 at 120fps
+            this.deltaTime = rawDelta * this.targetFPS;
+
             this.update();
 
             if (this.player.health <= 0) {
@@ -915,6 +931,3 @@ if (!window.playerReady) {
 if (window.playerData && window.playerData.isAuthenticated) {
     startGame();
 }
-
-
-
